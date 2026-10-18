@@ -144,8 +144,14 @@ function buildMenus() {
   chrome.contextMenus.removeAll(() => {
     if (!state.enabled) return;
     if (want.downloadLink) {
-      chrome.contextMenus.create({ id: 'odm-link', title: 'Download with OpenDM', contexts: ['link'] });
-      chrome.contextMenus.create({ id: 'odm-media', title: 'Download with OpenDM', contexts: ['image', 'video', 'audio'] });
+      const web = ['http://*/*', 'https://*/*', 'ftp://*/*'];
+      chrome.contextMenus.create({ id: 'odm-link', title: 'Download with OpenDM', contexts: ['link'], targetUrlPatterns: web });
+      // blob: sources (most web players) have no downloadable address, so the item is hidden for them.
+      chrome.contextMenus.create({ id: 'odm-media', title: 'Download with OpenDM', contexts: ['image', 'video', 'audio'], targetUrlPatterns: web });
+      chrome.contextMenus.create({
+        id: 'odm-videopage', title: 'Download this video with OpenDM', contexts: ['page', 'video', 'frame'],
+        documentUrlPatterns: ['*://*.youtube.com/watch*', '*://*.youtube.com/shorts/*', '*://*.youtube.com/live/*'],
+      });
     }
     if (want.downloadSelected) chrome.contextMenus.create({ id: 'odm-selected', title: 'Download selected links with OpenDM', contexts: ['selection'] });
     if (want.downloadAll) chrome.contextMenus.create({ id: 'odm-all', title: 'Download all links with OpenDM', contexts: ['page', 'frame'] });
@@ -180,7 +186,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   await refreshConfig(true);
   if (!state.alive) return notifyTab(tab, 'OpenDM is not running. Start the OpenDM app and try again.');
   try {
-    if (info.menuItemId === 'odm-link' || info.menuItemId === 'odm-media') {
+    if (info.menuItemId === 'odm-videopage') {
+      const title = (tab.title || 'video').replace(/ - YouTube$/, '').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 150) || 'video';
+      await send({ url: tab.url, referrer: tab.url, pageUrl: tab.url, title, fileName: `${title}.mp4`, kind: 'ytdlp', ytdlp: { quality: 'best' }, cookies: '', force: true });
+    } else if (info.menuItemId === 'odm-link' || info.menuItemId === 'odm-media') {
       const url = info.menuItemId === 'odm-link' ? info.linkUrl : info.srcUrl;
       if (!/^(https?|ftp):/i.test(url || '')) return notifyTab(tab, 'This item has no downloadable address.');
       await send({ url, referrer: info.pageUrl || tab?.url || '', pageUrl: tab?.url || '', title: info.selectionText || '', force: true });
@@ -216,6 +225,7 @@ function header(details, name) {
 
 chrome.webRequest.onHeadersReceived.addListener((d) => {
   if (d.tabId < 0 || d.statusCode >= 400 || !state.cfg?.videoPanel?.enabled || !active()) return;
+  if (/(^|\.)googlevideo\.com$/i.test(new URL(d.url).hostname)) return; // handled by the YouTube capture below
   const vp = state.cfg.videoPanel;
   const ct = header(d, 'content-type').split(';')[0].trim().toLowerCase();
   const ext = extOf(new URL(d.url).pathname);
@@ -246,10 +256,131 @@ chrome.webRequest.onHeadersReceived.addListener((d) => {
 chrome.webNavigation.onCommitted.addListener((d) => {
   if (d.frameId === 0) {
     tabMedia.delete(d.tabId);
+    ytTabs.delete(d.tabId);
     chrome.action.setBadgeText({ tabId: d.tabId, text: '' });
   }
 });
-chrome.tabs.onRemoved.addListener((id) => tabMedia.delete(id));
+// YouTube navigates between videos without reloading the page.
+chrome.webNavigation.onHistoryStateUpdated.addListener((d) => {
+  if (d.frameId === 0 && ytTabs.has(d.tabId)) {
+    ytTabs.delete(d.tabId);
+    tabMedia.delete(d.tabId);
+    chrome.action.setBadgeText({ tabId: d.tabId, text: '' });
+  }
+});
+chrome.tabs.onRemoved.addListener((id) => {
+  tabMedia.delete(id);
+  ytTabs.delete(id);
+});
+
+// ---- YouTube: reuse the stream addresses the page's own player requests ------------------------
+// The player fetches separate video and audio streams from googlevideo.com. Each request URL is
+// already authorised for this browser, and carries the format (itag), MIME type and byte length
+// (clen). We keep one URL per format, drop the per-request range parameters, and offer every
+// format pair the player has loaded. Quality labels come from the player's own response data.
+
+const ytTabs = new Map(); // tabId -> { sid, formats: Map<itag, fmt>, sabr, meta, timer, qualities, title }
+const STRIP = ['range', 'rn', 'rbuf', 'ump', 'alr', 'srfvp'];
+
+chrome.webRequest.onBeforeRequest.addListener((d) => {
+  // Record even before the config has loaded: Chrome wakes this service worker for the request
+  // itself, so the settings are checked later, in publishYouTube.
+  if (d.tabId < 0 || !state.enabled) return;
+  let u;
+  try {
+    u = new URL(d.url);
+  } catch {
+    return;
+  }
+  const sid = u.searchParams.get('id') || '';
+  const itag = u.searchParams.get('itag');
+  let t = ytTabs.get(d.tabId);
+  if (!t || (sid && itag && t.sid !== sid)) {
+    t = { sid, formats: new Map(), sabr: false, meta: null, timer: null };
+    ytTabs.set(d.tabId, t);
+  }
+  const clen = Number(u.searchParams.get('clen'));
+  const mime = u.searchParams.get('mime') || '';
+  if (!itag || !clen || !mime) {
+    // Server-driven streaming (sabr) and live streams carry no replayable byte range.
+    if (u.searchParams.has('sabr') || d.method === 'POST') {
+      t.sabr = true;
+      publishYouTube(d.tabId);
+    }
+    return;
+  }
+  if (t.formats.has(itag)) return;
+  for (const k of STRIP) u.searchParams.delete(k);
+  t.formats.set(itag, { itag, url: u.href, mime, clen, dur: Number(u.searchParams.get('dur')) || 0 });
+  publishYouTube(d.tabId);
+}, { urls: ['*://*.googlevideo.com/videoplayback*'], types: ['xmlhttprequest', 'media', 'other'] });
+
+function publishYouTube(tabId) {
+  const t = ytTabs.get(tabId);
+  if (!t || t.timer) return;
+  t.timer = setTimeout(async () => {
+    t.timer = null;
+    await refreshConfig();
+    if (!active() || !state.cfg?.videoPanel?.enabled) return;
+    try {
+      const [r] = await chrome.scripting.executeScript({
+        target: { tabId }, world: 'MAIN',
+        func: () => {
+          // Read-only metadata from the player; stream addresses are not taken from here.
+          const p = document.querySelector('#movie_player')?.getPlayerResponse?.() || window.ytInitialPlayerResponse;
+          if (!p) return null;
+          return {
+            title: p.videoDetails?.title || document.title,
+            fmts: (p.streamingData?.adaptiveFormats || []).map((f) => ({ itag: String(f.itag), q: f.qualityLabel || '', h: f.height || 0, fps: f.fps || 0, abr: f.averageBitrate || f.bitrate || 0 })),
+          };
+        },
+      });
+      t.meta = r?.result || t.meta;
+    } catch { /* page not scriptable */ }
+    const items = youTubeItems(t);
+    tabMedia.set(tabId, items);
+    chrome.action.setBadgeText({ tabId, text: items.length && items[0].kind !== 'notice' ? String(Math.min(99, items.length)) : '' });
+    chrome.action.setBadgeBackgroundColor({ tabId, color: '#15806c' });
+    chrome.tabs.sendMessage(tabId, { type: 'odm-media', items, mode: state.cfg?.videoPanel?.mode }).catch(() => {});
+  }, 400);
+}
+
+function extFor(mime) {
+  if (/^audio\/mp4/.test(mime)) return 'm4a';
+  if (/webm/.test(mime)) return 'webm';
+  if (/mp4/.test(mime)) return 'mp4';
+  return 'bin';
+}
+
+function youTubeItems(t) {
+  const meta = new Map((t.meta?.fmts || []).map((f) => [f.itag, f]));
+  const all = [...t.formats.values()].map((f) => ({ h: 0, fps: 0, abr: 0, q: '', ...f, ...(meta.get(f.itag) || {}), ext: extFor(f.mime) }));
+  const videos = all.filter((f) => f.mime.startsWith('video/')).sort((a, b) => (b.h - a.h) || (b.clen - a.clen));
+  const audios = all.filter((f) => f.mime.startsWith('audio/')).sort((a, b) => (b.abr - a.abr) || (b.clen - a.clen));
+  const part = (f, role) => ({ role, url: f.url, size: f.clen, ext: f.ext, mime: f.mime, label: f.q || `itag ${f.itag}` });
+  const qualities = [];
+  for (const v of videos) {
+    const family = v.ext === 'webm' ? 'webm' : 'm4a';
+    const a = audios.find((x) => x.ext === family) || audios[0];
+    const container = !a ? `${v.ext.toUpperCase()} (no audio)` : v.ext === 'webm' && a.ext === 'webm' ? 'WebM' : v.ext === 'mp4' && a.ext === 'm4a' ? 'MP4' : 'MKV';
+    qualities.push({ label: `${v.q || 'itag ' + v.itag} ${container}`, size: v.clen + (a?.clen || 0), parts: a ? [part(v, 'video'), part(a, 'audio')] : [part(v, 'video')] });
+  }
+  for (const a of audios) qualities.push({ label: `Audio only · ${a.ext.toUpperCase()}${a.abr ? ' ' + Math.round(a.abr / 1000) + ' kbps' : ''}`, size: a.clen, parts: [part(a, 'audio')] });
+  t.qualities = qualities;
+  t.title = (t.meta?.title || 'video').replace(/ - YouTube$/, '');
+  if (!qualities.length && t.sabr) {
+    // Server-driven streaming: the player's requests can't be replayed, so the app hands the
+    // page to yt-dlp. Offer the heights the player reports.
+    const heights = [...new Set((t.meta?.fmts || []).map((f) => f.h).filter(Boolean))].sort((a, b) => b - a);
+    return [
+      { kind: 'ytdlp', label: 'Best quality', quality: 'best' },
+      ...heights.map((h) => ({ kind: 'ytdlp', label: `${h}p`, quality: String(h) })),
+      { kind: 'ytdlp', label: 'Audio only (M4A)', quality: 'audio' },
+    ];
+  }
+  return qualities.map((q, i) => ({ kind: 'youtube', label: q.label, size: q.size, ext: q.parts.length > 1 ? '' : q.parts[0].ext, index: i }));
+}
+
 
 // ---- messages from content scripts / options ---------------------------------------------------
 
@@ -265,6 +396,27 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type === 'odm-download-link') {
     send({ url: msg.url, referrer: sender.tab?.url || '', pageUrl: sender.tab?.url || '', force: true }).catch(() => {});
     return;
+  }
+  if (msg.type === 'odm-download-media' && msg.item.kind === 'ytdlp') {
+    const t = ytTabs.get(sender.tab?.id);
+    const title = (t?.title || sender.tab?.title || 'video').replace(/ - YouTube$/, '').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 150) || 'video';
+    send({ url: sender.tab.url, referrer: sender.tab.url, pageUrl: sender.tab.url, title, fileName: `${title}.${msg.item.quality === 'audio' ? 'm4a' : 'mp4'}`, kind: 'ytdlp', ytdlp: { quality: msg.item.quality }, cookies: '', force: true })
+      .then(() => reply({ ok: true }), (e) => reply({ ok: false, error: e.message }));
+    return true;
+  }
+  if (msg.type === 'odm-download-media' && msg.item.kind === 'youtube') {
+    const t = ytTabs.get(sender.tab?.id);
+    const q = t?.qualities?.[msg.item.index];
+    if (!q) {
+      reply({ ok: false, error: 'This video is no longer available - reload the page.' });
+      return;
+    }
+    const qualities = [q, ...t.qualities.filter((x) => x !== q)];
+    const title = t.title.replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 150) || 'video';
+    // cookies: '' - the page's youtube.com cookies must never be sent to googlevideo.com.
+    send({ url: sender.tab.url, referrer: sender.tab.url, pageUrl: sender.tab.url, title: t.title, fileName: `${title}.${q.parts.length > 1 ? 'mp4' : q.parts[0].ext}`, kind: 'muxed', parts: q.parts, qualities, size: q.size, cookies: '', force: true })
+      .then(() => reply({ ok: true }), (e) => reply({ ok: false, error: e.message }));
+    return true;
   }
   if (msg.type === 'odm-download-media') {
     const it = msg.item;

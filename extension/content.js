@@ -21,6 +21,29 @@
       media = r.media;
       schedulePanel();
     }
+    refreshVideoPage();
+  });
+
+  // On YouTube video pages the button is offered straight away from the page address; the app
+  // downloads the page with yt-dlp and asks for the quality. Captured streams replace this entry.
+  const VIDEO_PAGE = /^https?:\/\/(?:(?:www|m|music)\.)?youtube\.com\/(?:watch\?|shorts\/|live\/)/i;
+  const pageEntry = { kind: 'ytdlp', label: 'Download this video', quality: 'best', page: true };
+  function refreshVideoPage() {
+    if (window !== top || !cfg.active) return;
+    if (!VIDEO_PAGE.test(location.href)) {
+      media = media.filter((m) => !m.page);
+      if (host && !media.length) host.style.visibility = 'hidden';
+      return;
+    }
+    hiddenByUser = false;
+    if (!media.length) media = [pageEntry];
+    if (host) host.style.visibility = '';
+    schedulePanel();
+  }
+  // YouTube switches videos without reloading the page.
+  document.addEventListener('yt-navigate-finish', () => {
+    media = [];
+    refreshVideoPage();
   });
 
   addEventListener('keydown', (e) => e.key === 'Insert' && (insertHeld = true), true);
@@ -46,7 +69,7 @@
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'odm-media') {
-      media = msg.items || [];
+      media = msg.items?.length ? msg.items : VIDEO_PAGE.test(location.href) && window === top ? [pageEntry] : [];
       cfg.mode = msg.mode || cfg.mode;
       cfg.active = true;
       schedulePanel();
@@ -138,6 +161,7 @@
   }
 
   function label(m) {
+    if (m.label) return m.label;
     let name = '';
     try {
       name = decodeURIComponent(new URL(m.url).pathname.split('/').pop() || '');
@@ -168,6 +192,7 @@
 
   function download(m) {
     menu.classList.remove('open');
+    if (m.kind === 'notice') return toast(m.detail || m.label);
     safeSend({ type: 'odm-download-media', item: m }, (r) => {
       if (chrome.runtime.lastError) return;
       toast(r?.ok ? 'Sent to OpenDM' : 'Could not reach OpenDM — is the app running?');
