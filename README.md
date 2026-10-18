@@ -43,7 +43,8 @@ no IDM code or artwork is reused:
 | Speed limiter (global, per download) | ✅ token bucket |
 | Download limits (X MB every Y hours, auto-resume) | ✅ |
 | FTP (passive), multi-connection with REST | ✅ `ftp-download.js` |
-| Video streams | ✅ HLS (master → best variant or chosen quality, AES-128). DASH muxing ❌ |
+| Video streams | ✅ HLS (master → best variant or chosen quality, AES-128). Generic DASH `.mpd` manifests ❌ |
+| YouTube: capture the player's `googlevideo.com/videoplayback` streams, pick quality, download video + audio in `&range=` chunks, merge | ✅ `extension/background.js`, `engine/muxed-download.js` (merge needs FFmpeg; without it the audio is saved beside the video) |
 | Proxy: none / system / PAC / manual HTTP, HTTPS, FTP, SOCKS4/5, bypass list | ✅ |
 | Site logins (server/path patterns), Basic auth, login prompt on 401 | ✅ Basic only (no NTLM/Digest) |
 | Categories with extensions + folders, auto-categorise, remember last folder | ✅ |
@@ -71,6 +72,8 @@ no IDM code or artwork is reused:
 | Browser context menu: Download with…, Download all links, Download selected links | ✅ + "Download all links" picker with background size/type checks |
 | Video panel on web players with media list | ✅ extension `content.js` |
 | Toolbar button toggles integration | ✅ |
+| YouTube with server-driven streaming (most videos today), and YouTube links pasted into Add URL: handed to [yt-dlp](https://github.com/yt-dlp/yt-dlp) with quality choice, progress, pause/resume, queues | ✅ `engine/ytdlp.js` — yt-dlp is downloaded on first use (Options → Video panel); OpenDM's own Electron runtime is passed to it as the JavaScript runtime YouTube now requires |
+| FFmpeg comes from the optional `ffmpeg-static` package (GPL-3.0), PATH, or Options → Video panel | ℹ️ |
 | Firefox / Opera extensions, IE BHO, network-driver (WFP/TDI) capture of any app, shell extension | ❌ Chrome/Edge MV3 only |
 | ZIP preview before download, "Open with…", Tip of the Day | Tip ✅, others ❌ |
 | Dial-up/hang-up modem, toolbar skin downloads, registration, Tell a friend, 30+ language packs | ❌ (obsolete or out of scope; English only) |
