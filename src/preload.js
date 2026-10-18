@@ -9,7 +9,7 @@ const INVOKE = new Set([
   'cats:save', 'cats:reset', 'settings:save', 'settings:replaceList', 'settings:reset',
   'dialog:folder', 'dialog:file', 'dialog:confirm',
   'win:open', 'win:close', 'win:resize', 'win:setTitle', 'win:showMain', 'win:toggleDrop',
-  'clip:urls', 'clip:write', 'util:batch', 'util:openExternal', 'util:openPath', 'util:probe', 'util:hlsVariants', 'util:ffmpeg', 'util:ytdlp', 'util:ytdlpInstall', 'util:ytdlpInfo',
+  'clip:urls', 'clip:write', 'util:batch', 'util:openExternal', 'util:openPath', 'util:probe', 'util:hlsVariants', 'util:ffmpeg', 'util:extensionDir', 'util:ytdlp', 'util:ytdlpInstall', 'util:ytdlpInfo',
   'import', 'export', 'batch:clipboard', 'power:run', 'power:cancel', 'app:quit',
   'grabber:list', 'grabber:get', 'grabber:new', 'grabber:save', 'grabber:delete', 'grabber:run', 'grabber:stop',
   'grabber:setChecked', 'grabber:addToList', 'grabber:open',

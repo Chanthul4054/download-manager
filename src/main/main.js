@@ -37,6 +37,11 @@ let quitting = false;
 
 // ---- windows -----------------------------------------------------------------------------------
 
+// The installer copies the extension next to the app (resources/extension).
+function extensionDir() {
+  return app.isPackaged ? path.join(process.resourcesPath, 'extension') : path.join(ROOT, 'extension');
+}
+
 function iconPath(size = 256) {
   return path.join(ASSETS, `icon${size}.png`);
 }
@@ -408,6 +413,7 @@ function buildMenu() {
       submenu: [
         { label: 'H&elp contents', accelerator: 'F1', click: cmd('help') },
         { label: 'Browser &extension setup...', click: cmd('help', 'extension') },
+        { label: 'Open browser extension folder', click: () => shell.openPath(extensionDir()) },
         { label: '&Scheduler and queues', click: cmd('help', 'queues') },
         { label: '&Grabber help', click: cmd('help', 'grabber') },
         { label: 'Tip of the &Day...', click: cmd('tip') },
@@ -687,6 +693,7 @@ function registerIpc() {
   handle('util:batch', (pattern, from, to, width) => u.expandBatch(pattern, from, to, width));
   handle('util:openExternal', (url) => /^https?:/.test(url) && shell.openExternal(url));
   handle('util:openPath', (p) => shell.openPath(p));
+  handle('util:extensionDir', () => extensionDir());
   handle('util:ffmpeg', () => require('./engine/ffmpeg').findFfmpeg(store.settings.videoPanel.ffmpegPath));
   const ytdlp = require('./engine/ytdlp');
   const binDir = () => path.join(app.getPath('userData'), 'bin');

@@ -550,7 +550,13 @@ const HELP = {
     h('ol', {},
       h('li', {}, 'Open chrome://extensions (or edge://extensions).'),
       h('li', {}, 'Turn on Developer mode.'),
-      h('li', {}, 'Click "Load unpacked" and choose the "extension" folder inside the OpenDM folder.'),
+      h('li', {}, 'Click "Load unpacked" and choose the OpenDM extension folder:', (() => {
+        const p = h('code', { style: { display: 'block', margin: '6px 0', userSelect: 'text' } }, '…');
+        api.invoke('util:extensionDir').then((d) => (p.textContent = d));
+        return h('div', {}, p, h('div', { class: 'row' },
+          h('button', { class: 'btn small', onclick: () => api.invoke('util:extensionDir').then((d) => api.invoke('util:openPath', d)) }, icon('folderOpen'), 'Open folder'),
+          h('button', { class: 'btn small', onclick: () => api.invoke('util:extensionDir').then((d) => api.invoke('clip:write', d)).then(() => toast('Path copied')) }, icon('copy'), 'Copy path')));
+      })()),
       h('li', {}, 'Pin the OpenDM icon. Clicking it turns integration on or off for the browser.')),
     h('p', {}, 'The extension talks to the app on 127.0.0.1, port ', h('b', {}, String(S?.settings.general.integrationPort || 52790)), '. If you change the port, change it in the extension options too.')]],
   queues: ['Scheduler and queues', () => [
