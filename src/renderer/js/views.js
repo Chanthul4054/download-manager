@@ -167,7 +167,8 @@ export async function mountNewDownload(root) {
   const st = await boot();
   const p = (await payload()) || {};
   const s = st.settings;
-  const d = { url: p.url || '', fileName: '', saveDir: '', category: '', description: p.description || '', remember: false, user: p.auth?.user || '', pass: p.auth?.pass || '', variant: null, queueId: 'main' };
+  const d = { url: p.url || '', fileName: '', saveDir: '', category: '', description: p.description || '', remember: false, user: p.auth?.user || '', pass: p.auth?.pass || '', variant: null, queueId: 'main', parts: p.parts || null };
+  const partsSize = () => (d.parts && d.parts.every((x) => x.size) ? d.parts.reduce((a, x) => a + x.size, 0) : null);
   let info = null;
   let userEditedName = !!p.fileName;
   let userEditedDir = !!p.saveDir;
@@ -197,7 +198,7 @@ export async function mountNewDownload(root) {
     if (my !== seq) return;
     sizeEl.textContent = 'Checking…';
     const auth = d.user ? { user: d.user, pass: d.pass } : undefined;
-    info = await api.invoke('dl:describe', d.url, { referer: p.referer, cookies: p.cookies, fileName: userEditedName ? d.fileName || p.fileName : p.fileName, mime: p.mime, auth, category: d.category || undefined, kind: p.kind, probe: p.kind !== 'hls' });
+    info = await api.invoke('dl:describe', d.url, { referer: p.referer, cookies: p.cookies, fileName: userEditedName ? d.fileName || p.fileName : p.fileName, mime: p.mime, auth, category: d.category || undefined, kind: d.parts ? 'muxed' : p.kind, parts: d.parts || undefined, size: partsSize() || p.size, probe: p.kind !== 'hls' && !d.parts });
     if (my !== seq) return;
     if (!userEditedName) {
       d.fileName = info.fileName;
@@ -217,6 +218,17 @@ export async function mountNewDownload(root) {
     sizeEl.className = info.error ? 'status-err' : 'muted';
     authBox.classList.toggle('hidden', !info.authRequired && !d.user);
     if (info.kind === 'hls') loadVariants();
+    if (info.kind === 'ytdlp') loadYtdlp();
+    if (p.qualities?.length && qualityRow.classList.contains('hidden')) {
+      qualityRow.classList.remove('hidden');
+      const pick = (i) => {
+        d.parts = p.qualities[i].parts;
+        const sz = partsSize();
+        sizeEl.textContent = `${p.qualities[i].label}${sz ? ' · ' + bytes(sz) : ''}${d.parts.length > 1 ? ' · video and audio are merged after download' : ''}`;
+      };
+      qualityRow.replaceChildren(field('Quality', select(p.qualities.map((q, i) => [i, `${q.label}${q.size ? ' — ' + bytes(q.size) : ''}`]), 0, (v) => pick(Number(v))), 'Only qualities the player has loaded are listed. Switch quality in the player to add more.'));
+      pick(0);
+    }
     checkDuplicate();
   };
 
@@ -229,6 +241,63 @@ export async function mountNewDownload(root) {
       qualityRow.replaceChildren(field('Quality', select(vs.map((v) => [v.uri, `${v.resolution || 'audio/other'} · ${Math.round(v.bandwidth / 1000)} kbps`]), d.variant, (v) => (d.variant = v))));
       sizeEl.textContent = 'Stream (HLS) · size known after download';
     } catch { /* not a master playlist */ }
+  };
+
+
+  let ytLoaded = false;
+  const loadYtdlp = async () => {
+    if (ytLoaded) return;
+    ytLoaded = true;
+    qualityRow.classList.remove('hidden');
+    qualityRow.replaceChildren(h('div', { class: 'hint', style: { paddingLeft: '138px' } }, 'Reading video information…'));
+    const info = await api.invoke('util:ytdlpInfo', d.url).catch((e) => ({ error: e.message }));
+    if (info.missing) {
+      const btn = h('button', {
+        class: 'btn primary', onclick: async () => {
+          btn.disabled = true;
+          btn.textContent = 'Downloading yt-dlp…';
+          try {
+            await api.invoke('util:ytdlpInstall');
+            ytLoaded = false;
+            loadYtdlp();
+          } catch (e) {
+            btn.disabled = false;
+            btn.textContent = 'Retry';
+            toast('Could not download yt-dlp: ' + e.message);
+          }
+        },
+      }, 'Download yt-dlp');
+      qualityRow.replaceChildren(h('div', { class: 'col', style: { background: 'var(--accent-soft)', padding: '10px 12px', borderRadius: '6px', gap: '6px' } },
+        h('div', {}, 'Video pages like YouTube are downloaded with yt-dlp, a free open-source tool. It is not installed yet.'),
+        h('div', { class: 'row' }, btn, h('span', { class: 'hint' }, 'About 18 MB, from github.com/yt-dlp/yt-dlp (official releases).'))));
+      sizeEl.textContent = 'Video page';
+      return;
+    }
+    if (info.error) {
+      qualityRow.replaceChildren(h('div', { class: 'status-err', style: { paddingLeft: '138px' } }, info.error));
+      sizeEl.textContent = 'Could not read this video';
+      sizeEl.className = 'status-err';
+      return;
+    }
+    if (!userEditedName && info.title) {
+      d.fileName = info.title.replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 150) + '.mp4';
+      nameInp.value = d.fileName;
+    }
+    const opts = [['best', 'Best available'], ...info.heights.map((x) => [String(x), `${x}p${info.sizes[x] ? ' — about ' + bytes(info.sizes[x]) : ''}`]), ['audio', 'Audio only (M4A)']];
+    const want = p.ytdlp?.quality && opts.some((o) => o[0] === String(p.ytdlp.quality)) ? String(p.ytdlp.quality) : 'best';
+    d.ytdlpQuality = want;
+    const setQ = (v) => {
+      d.ytdlpQuality = v;
+      if (!userEditedName && d.fileName) {
+        d.fileName = d.fileName.replace(/\.(mp4|m4a)$/i, '') + (v === 'audio' ? '.m4a' : '.mp4');
+        nameInp.value = d.fileName;
+      }
+    };
+    setQ(want);
+    qualityRow.replaceChildren(field('Quality', select(opts, want, setQ)));
+    const dur = info.duration ? ` · ${Math.floor(info.duration / 60)}:${String(Math.round(info.duration % 60)).padStart(2, '0')}` : '';
+    sizeEl.textContent = `${info.extractor || 'Video'}${dur} · video and audio are merged after download`;
+    sizeEl.className = 'muted';
   };
 
   const checkDuplicate = () => {
@@ -252,6 +321,8 @@ export async function mountNewDownload(root) {
         referer: p.referer, parentPage: p.parentPage, cookies: p.cookies, userAgent: p.userAgent, mime: p.mime, size: info?.size ?? p.size, kind: p.kind,
         auth: d.user ? { user: d.user, pass: d.pass } : undefined, rememberPath: d.remember, duplicateAction: dupAction || undefined,
         hls: d.variant ? { variant: d.variant } : p.hls, start, queueId: start ? null : d.queueId,
+        parts: d.parts || undefined, kind: d.parts ? 'muxed' : p.kind,
+        ytdlp: d.ytdlpQuality ? { quality: d.ytdlpQuality } : undefined,
       });
       close();
     } catch (e) {

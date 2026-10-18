@@ -265,7 +265,23 @@ export function optionsDialog(initial = 'general') {
       field('Media types', txt(vp, 'types')),
       field('Minimum size', h('div', { class: 'row' }, num(vp, 'minSizeKB', { min: 0 }), 'KB')),
       field("Don't show on these sites", txt(vp, 'excludedSites', { placeholder: 'example.com *.example.org' })),
-      check("Don't take over media requests from web players automatically", vp.dontCaptureFromPlayers, (v) => (vp.dontCaptureFromPlayers = v)))],
+      check("Don't take over media requests from web players automatically", vp.dontCaptureFromPlayers, (v) => (vp.dontCaptureFromPlayers = v)),
+      (() => {
+        const status = h('div', { class: 'hint' }, 'Checking…');
+        api.invoke('util:ffmpeg').then((p) => (status.textContent = p ? `Using: ${p}` : 'Not found — YouTube video and audio will be saved as separate files.'));
+        return field('FFmpeg', h('div', { class: 'col', style: { gap: '4px' } },
+          h('div', { class: 'row' }, txt(vp, 'ffmpegPath', { placeholder: 'Built-in / found on PATH' }), h('button', { class: 'btn', onclick: async (e) => { const f = await api.invoke('dialog:file'); if (f) { vp.ffmpegPath = f; e.target.previousSibling.value = f; } } }, 'Browse…')),
+          status), 'Used to merge separate video and audio streams (YouTube and other DASH sites).');
+      })(),
+      (() => {
+        const status = h('span', { class: 'hint' }, 'Checking…');
+        const refresh = () => api.invoke('util:ytdlp').then((p) => (status.textContent = p ? `Using: ${p}` : 'Not installed'));
+        refresh();
+        const btn = h('button', { class: 'btn', onclick: async () => { btn.disabled = true; status.textContent = 'Downloading the latest yt-dlp…'; try { await api.invoke('util:ytdlpInstall'); } catch (e) { toast(e.message); } btn.disabled = false; refresh(); } }, 'Download / update yt-dlp');
+        return field('yt-dlp', h('div', { class: 'col', style: { gap: '4px' } },
+          h('div', { class: 'row' }, txt(vp, 'ytdlpPath', { placeholder: 'Installed by OpenDM / found on PATH' }), btn),
+          status), 'Downloads video pages such as YouTube. Keep it updated when a site stops working.');
+      })())],
     sounds: ['Sounds', 'info', () => h('div', { class: 'col' },
       check('Play a sound when a download completes', snd.complete, (v) => (snd.complete = v)),
       check('Play a sound when a download fails', snd.failed, (v) => (snd.failed = v)),
@@ -534,7 +550,13 @@ const HELP = {
     h('ol', {},
       h('li', {}, 'Open chrome://extensions (or edge://extensions).'),
       h('li', {}, 'Turn on Developer mode.'),
-      h('li', {}, 'Click "Load unpacked" and choose the "extension" folder inside the OpenDM folder.'),
+      h('li', {}, 'Click "Load unpacked" and choose the OpenDM extension folder:', (() => {
+        const p = h('code', { style: { display: 'block', margin: '6px 0', userSelect: 'text' } }, '…');
+        api.invoke('util:extensionDir').then((d) => (p.textContent = d));
+        return h('div', {}, p, h('div', { class: 'row' },
+          h('button', { class: 'btn small', onclick: () => api.invoke('util:extensionDir').then((d) => api.invoke('util:openPath', d)) }, icon('folderOpen'), 'Open folder'),
+          h('button', { class: 'btn small', onclick: () => api.invoke('util:extensionDir').then((d) => api.invoke('clip:write', d)).then(() => toast('Path copied')) }, icon('copy'), 'Copy path')));
+      })()),
       h('li', {}, 'Pin the OpenDM icon. Clicking it turns integration on or off for the browser.')),
     h('p', {}, 'The extension talks to the app on 127.0.0.1, port ', h('b', {}, String(S?.settings.general.integrationPort || 52790)), '. If you change the port, change it in the extension options too.')]],
   queues: ['Scheduler and queues', () => [

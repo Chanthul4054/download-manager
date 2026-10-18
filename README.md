@@ -1,93 +1,152 @@
 # OpenDM
 
-A multi-connection download manager for Windows (also runs on macOS/Linux) modelled on the
-feature set of Internet Download Manager 6.43, built clean-room with Electron and plain Node.js.
+A multi-connection download manager for Windows, macOS and Linux, built with Electron and plain
+Node.js. It comes with a Chrome/Edge extension that hands browser downloads and web videos to the app.
 
-```
+## Features
+
+- **Fast, resumable downloads**: each file is split across several connections, and a free
+  connection takes over half of the largest remaining piece. Downloads resume after a pause, crash
+  or restart, and OpenDM notices if the file changed on the server.
+- **HTTP, HTTPS and FTP**, with redirects, server-provided file names, per-server connection
+  limits, retries and timeouts.
+- **Video**: HLS streams (with quality choice and AES-128), and YouTube through the extension or
+  [yt-dlp](https://github.com/yt-dlp/yt-dlp). Separate video and audio streams are merged with FFmpeg.
+- **Queues and scheduler**: run several files at once, retry failed ones, start and stop on a
+  schedule, and shut down, sleep or exit when done.
+- **Site grabber**: crawl a website and download the files that match your filters.
+- **Speed limiter and download quotas** (X MB every Y hours).
+- **Proxy support**: system, PAC, HTTP/HTTPS/FTP and SOCKS4/5.
+- **Categories** with their own file types and folders, batch downloads (`file*.zip`), import and
+  export, clipboard monitoring, a drop target, a tray icon, dark mode and sounds.
+- **Browser integration**: take over downloads by file type, a "Download with OpenDM" context
+  menu, "Download all links", and a video button on web players.
+
+## Download and install (Windows)
+
+1. Download **`OpenDM-Setup-<version>.exe`** from the
+   [latest release](https://github.com/Chanthul4054/download-manager/releases/latest).
+2. Run it. The installer is not code-signed yet, so Windows may show **"Windows protected your
+   PC"**. Click **More info → Run anyway**.
+3. Pick an install folder (or keep the default) and click **Install**. No administrator rights are
+   needed. OpenDM starts when setup finishes, and gets Start-menu and desktop shortcuts.
+
+FFmpeg is included. yt-dlp, used for YouTube, is downloaded the first time you need it.
+
+### Add the browser extension (Chrome / Edge)
+
+The extension is installed together with the app.
+
+1. In OpenDM, choose **Help → Open browser extension folder** (or **Help → Browser extension
+   setup** to copy its path).
+2. Open `chrome://extensions` (or `edge://extensions`) and turn on **Developer mode**.
+3. Click **Load unpacked** and choose that folder.
+4. Pin the OpenDM icon. Clicking it turns browser integration on or off.
+
+Keep OpenDM running while you browse; it lives in the notification area when its window is
+closed. To quit it completely, use **Tasks → Exit**.
+
+### Uninstall
+
+Use **Settings → Apps → Installed apps → OpenDM → Uninstall**. Your download list and settings
+are kept in `%APPDATA%\OpenDM`; delete that folder too if you want to remove them.
+
+## Requirements (running from source)
+
+- [Node.js](https://nodejs.org/) 18 or newer
+- Optional: [FFmpeg](https://ffmpeg.org/), used to merge video and audio. It is installed with the
+  optional `ffmpeg-static` package, or OpenDM finds it on your `PATH`. You can also set its path
+  in **Options → Video panel**.
+- Optional: yt-dlp. OpenDM downloads it the first time you need it.
+
+## Getting started
+
+```sh
 npm install
-npm start            # run the app
-npm test             # engine/queue/scheduler tests against a local server
-node scripts/make-icons.js   # regenerate icons (already committed)
+npm start
 ```
 
-Set `OPENDM_DATA_DIR=<folder>` to keep settings and the download list somewhere other than the
-default profile (portable mode, testing).
+### Browser extension when running from source
 
-### Browser extension (Chrome / Edge)
-`chrome://extensions` → Developer mode → **Load unpacked** → choose the `extension/` folder.
-It talks to the app on `127.0.0.1:52790` (Options → General → Local port).
+1. Open `chrome://extensions` (or `edge://extensions`) and turn on **Developer mode**.
+2. Click **Load unpacked** and choose the `extension/` folder of this repository.
+3. Keep OpenDM running. The extension talks to it on `127.0.0.1:52790`. To use a different port,
+   change it in **Options → General**.
 
-## How it was derived
+## Command line
 
-The feature list comes from IDM's shipped artifacts, analysed with REA and the Windows help compiler —
-no IDM code or artwork is reused:
-
-| Source | What it gave |
-|---|---|
-| `IDMan.exe` PE resources (REA `inspect_pe_resources`: 105 dialogs, 37 string tables, 2 menus, decoded from REA's file ranges) | Main menu tree, every Options tab and control, scheduler, grabber, progress/complete dialogs |
-| `idman.chm`, `scheduler.chm`, `grabber.chm`, `tutor.chm` (decompiled) | Behaviour: dynamic segmentation, queue retry rules, grabber levels/filters, command line |
-| `IDMGCExt.crx` (REA `extract_artifact` + `analyze_javascript_application`) | Extension surface: MV3 service worker, native messaging, download/webRequest hooks, 4 context-menu items, toolbar toggle |
-| `IDMMsgHost.json`, file inventory | Browser ↔ app bridge, video-panel, shell/driver integration pieces |
-
-## Feature map
-
-| IDM feature | OpenDM |
-|---|---|
-| Dynamic segmentation: new connection takes half of the largest remaining segment | ✅ `src/main/engine/http-download.js` |
-| Connection reuse: finished connection continues into the next unstarted segment | ✅ same stream is kept open |
-| Resume after pause / crash / power loss (positions saved several times a minute) | ✅ every 3 s; verified across app restart |
-| Detects server-side file changes on resume (ETag / Last-Modified / size) | ✅ + "ignore modification changes" option |
-| Non-resumable servers, redirects, Content-Disposition names (RFC 5987) | ✅ |
-| Default max connections + per-server exceptions | ✅ |
-| Timeouts, per-connection retries, 429/503 → fewer connections | ✅ |
-| Speed limiter (global, per download) | ✅ token bucket |
-| Download limits (X MB every Y hours, auto-resume) | ✅ |
-| FTP (passive), multi-connection with REST | ✅ `ftp-download.js` |
-| Video streams | ✅ HLS (master → best variant or chosen quality, AES-128). DASH muxing ❌ |
-| Proxy: none / system / PAC / manual HTTP, HTTPS, FTP, SOCKS4/5, bypass list | ✅ |
-| Site logins (server/path patterns), Basic auth, login prompt on 401 | ✅ Basic only (no NTLM/Digest) |
-| Categories with extensions + folders, auto-categorise, remember last folder | ✅ |
-| Temp folder, numbered names for existing files, duplicate-link handling | ✅ |
-| Main window: categories/Unfinished/Finished tree, queues, sortable/resizable/reorderable columns, column chooser | ✅ |
-| Toolbar (large/small/icons), menus (Tasks/File/Downloads/View/Help) | ✅ |
-| Find / Find next with options | ✅ |
-| Download File Info dialog (category, Save As, remember path, description, Later → queue) | ✅ |
-| Download progress window: status, segment map with start markers, per-connection table, speed limiter tab, options-on-completion tab | ✅ |
-| Download complete dialog with Open / Open folder / drag-the-file | ✅ |
-| Properties: change URL ("refresh download address"), folder, name, login | ✅ |
-| Redownload, Delete (+files), Delete all completed | ✅ |
-| Queues: main download, synchronization, custom; N files at once; retries; failed file → end, lone file retried every 30 s | ✅ |
-| Scheduler: start/stop time, daily days or one date, periodic sync, on-finish open file / exit / shutdown / restart / sleep / hibernate, force close, 30 s cancel | ✅ |
-| Site Grabber: 4-step wizard, link levels this/other sites, parent dirs, main-domain, page & path filters, type presets, size limits, hide duplicates, subfolders, explore → check → download or add to list, statistics, save/copy projects, scheduled/periodic sync | ✅ (no "run page JavaScript", no IE cache) |
-| Batch download with `*` (numbers with wildcard size, letters), batch from clipboard | ✅ |
-| Import/export: own format and text files (links extracted) | ✅ |
-| Clipboard monitoring for matching file types | ✅ |
-| Drop target window, drag links onto main window | ✅ |
-| Command line `/d /p /f /a /n /q /s` (+ single instance) | ✅ (`/h` accepted, no-op) |
-| Tray icon and menu, minimize to tray, launch at sign-in | ✅ |
-| Sounds on complete / failure / queue done | ✅ generated tones |
-| Dark mode, font size | ✅ |
-| Browser takeover by file type, excluded sites/addresses, force key (Insert) & bypass key (Alt) | ✅ extension |
-| Browser context menu: Download with…, Download all links, Download selected links | ✅ + "Download all links" picker with background size/type checks |
-| Video panel on web players with media list | ✅ extension `content.js` |
-| Toolbar button toggles integration | ✅ |
-| Firefox / Opera extensions, IE BHO, network-driver (WFP/TDI) capture of any app, shell extension | ❌ Chrome/Edge MV3 only |
-| ZIP preview before download, "Open with…", Tip of the Day | Tip ✅, others ❌ |
-| Dial-up/hang-up modem, toolbar skin downloads, registration, Tell a friend, 30+ language packs | ❌ (obsolete or out of scope; English only) |
-
-## Layout
-
-```
-src/main/        Electron main process
-  engine/        net (proxy agents), http/ftp/hls downloads, limiter
-  manager.js     download list, categories, quotas, finalisation
-  queues.js      queues + scheduler
-  grabber.js     site crawler
-  integration.js localhost endpoint for the extension
-src/renderer/    UI (no framework): main window, dialogs, secondary windows
-extension/       Chrome/Edge MV3 extension
-test/            node:test suite with a local range-capable server
+```sh
+opendm /d <url> [/p <folder>] [/f <file name>] [/a] [/n] [/q] [/s]
 ```
 
-The extension endpoint only accepts requests from extension origins that send `X-OpenDM: 1`;
-browser pages can't make that request without a CORS preflight, which is never approved.
+| Switch | Meaning |
+| --- | --- |
+| `/d <url>` | Download the URL (a URL on its own also works) |
+| `/p <folder>` | Folder to save to |
+| `/f <name>` | File name to save as |
+| `/a` | Add to the queue without starting the download |
+| `/n` | Silent: don't show dialogs |
+| `/q` | Exit after the download finishes |
+| `/s` | Start the main queue |
+
+Only one copy of OpenDM runs at a time. Starting it again passes the switches to the copy that is
+already open.
+
+## Configuration
+
+Set the `OPENDM_DATA_DIR` environment variable to keep settings and the download list in a
+different folder, for example for portable use or testing.
+
+## Development
+
+```sh
+npm test                     # run the test suite against a local test server
+node scripts/make-icons.js   # regenerate the icons
+```
+
+### Building the installer
+
+```sh
+npm install
+npm run dist
+```
+
+This uses [electron-builder](https://www.electron.build/) to create
+`dist/OpenDM-Setup-<version>.exe` (an NSIS installer for 64-bit Windows). The browser extension is
+copied into the install folder, and FFmpeg is unpacked next to the app so it can run.
+
+To publish a new version:
+
+1. Bump `version` in `package.json`.
+2. Run `npm run dist`.
+3. Create a GitHub release for the new tag and attach the `.exe`:
+   `gh release create v<version> dist/OpenDM-Setup-<version>.exe --title "OpenDM <version>"`.
+
+The installer is unsigned, so Windows SmartScreen warns on first run. Signing needs a
+code-signing certificate configured for electron-builder (`win.certificateFile` /
+`CSC_LINK`).
+
+### Project structure
+
+```text
+src/main/          Electron main process
+  engine/          networking and proxies, HTTP/FTP/HLS/video downloads, speed limiter
+  manager.js       download list, categories, quotas
+  queues.js        queues and scheduler
+  grabber.js       site grabber
+  integration.js   local server for the browser extension
+src/renderer/      user interface (no framework)
+extension/         Chrome/Edge extension (Manifest V3)
+scripts/           helper scripts
+test/              tests (node:test)
+```
+
+### Security
+
+The local server only accepts requests from the browser extension, which sends an
+`X-OpenDM: 1` header. Ordinary web pages can't send that header without a CORS preflight, and
+OpenDM never approves the preflight.
+
+## License
+
+MIT. The optional `ffmpeg-static` package is licensed separately under GPL-3.0.

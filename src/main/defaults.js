@@ -112,6 +112,8 @@ function defaultSettings() {
       minSizeKB: 300,
       excludedSites: '',
       dontCaptureFromPlayers: true,
+      ffmpegPath: '',
+      ytdlpPath: '',
     },
     speedLimiter: { enabled: false, kbps: 500 },
     lastSaveDirs: {},
