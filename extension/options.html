@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenDM Integration options</title>
+  <style>
+    :root { color-scheme: light dark; --accent: #15806c; }
+    body { font: 14px/1.45 "Segoe UI", system-ui, sans-serif; max-width: 520px; margin: 32px auto; padding: 0 16px; }
+    h1 { font-size: 18px; display: flex; align-items: center; gap: 10px; }
+    label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    input[type=number] { width: 110px; padding: 5px 8px; font: inherit; }
+    button { margin-top: 14px; padding: 6px 14px; font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 6px; }
+    #status { margin-top: 12px; }
+    .ok { color: #2f8a3f; } .bad { color: #c2372d; }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+  <h1><img src="icons/icon32.png" width="28" height="28" alt="">OpenDM Integration</h1>
+  <p>The extension sends downloads to the OpenDM app on this computer. File types, keys and the video panel are configured in the app under Options.</p>
+  <label for="enabled"><input type="checkbox" id="enabled"> Integration enabled</label>
+  <label for="port">App port</label>
+  <input type="number" id="port" min="1024" max="65535">
+  <p>Must match Options → General → Local port in the app (default 52790).</p>
+  <button id="save">Save and test connection</button>
+  <div id="status" role="status"></div>
+  <script src="options.js"></script>
+</body>
+</html>
