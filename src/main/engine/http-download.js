@@ -90,6 +90,22 @@ class HttpDownload extends EventEmitter {
     this.persistTimer = setInterval(() => this.emit('persist'), 3000);
     const it = this.item;
     try {
+      if (it.rangeMode === 'query') {
+        // Size is known up front (e.g. googlevideo `clen`); every request is a bounded `&range=a-b` chunk.
+        if (!(it.size > 0)) throw new Error('Stream size is unknown');
+        it.resumable = true;
+        const has = Array.isArray(it.segments) && this.downloaded() > 0;
+        await this.openFile(!has);
+        if (!has) it.segments = [{ start: 0, end: it.size, pos: 0 }];
+        this.emit('meta', { size: it.size, resumable: true, contentType: it.contentType || '', fileName: null });
+        this.emit('status', 'Receiving data...');
+        this.fillConnections();
+        await this.whenIdle();
+        if (this.stopped) return this.finish('stopped');
+        if (this.fatal) return this.finish('error', this.fatal);
+        if (!this.isComplete()) return this.finish('error', this.lastError || new Error('Download interrupted'));
+        return this.finish('complete');
+      }
       const canResume = it.resumable && it.size > 0 && Array.isArray(it.segments) && this.downloaded() > 0;
       await this.openFile(!canResume);
       if (!canResume) {
@@ -196,7 +212,70 @@ class HttpDownload extends EventEmitter {
       });
   }
 
+  // Bounded chunk requests addressed with a `range=a-b` query parameter instead of a Range header.
+  async runQueryWorker(w) {
+    const maxRetries = this.settings.connection.connectionRetries ?? 20;
+    const CHUNK = 8 * 1024 * 1024;
+    while (!this.stopped && !this.fatal && !w.abort.signal.aborted) {
+      if (!w.seg || w.seg.pos >= w.seg.end) {
+        const next = this.nextSegment();
+        if (!next) return;
+        w.seg = next;
+        w.receiving = false;
+      }
+      const seg = w.seg;
+      const chunkEnd = Math.min(seg.end, seg.pos + CHUNK);
+      const u = new URL(this.item.url);
+      u.searchParams.set('range', `${seg.pos}-${chunkEnd - 1}`);
+      let res;
+      try {
+        ({ res } = await this.ctx.net.request(u.href, { headers: this.headers(), auth: this.item.auth, signal: w.abort.signal }));
+        if (res.statusCode >= 400) {
+          res.resume();
+          const err = Object.assign(new Error(`HTTP ${res.statusCode}`), { status: res.statusCode });
+          if ([401, 403, 404, 410].includes(res.statusCode)) {
+            err.message = `HTTP ${res.statusCode}: the stream link was refused or has expired — send the video to OpenDM again from its page`;
+            this.fatal = err;
+            return;
+          }
+          throw err;
+        }
+        const onAbort = () => res.destroy();
+        w.abort.signal.addEventListener('abort', onAbort, { once: true });
+        try {
+          for await (let chunk of res) {
+            if (w.abort.signal.aborted || this.stopped) break;
+            w.receiving = true;
+            const room = Math.min(chunkEnd, seg.end) - seg.pos; // seg.end may shrink when another connection splits it
+            if (room <= 0) break;
+            if (chunk.length > room) chunk = chunk.subarray(0, room);
+            let wait = 0;
+            for (const l of [this.limiter, ...this.ctx.limiters()]) wait = Math.max(wait, l.take(chunk.length));
+            if (wait) await sleep(wait);
+            await this.fh.write(chunk, 0, chunk.length, seg.pos);
+            seg.pos += chunk.length;
+            this.meter.add(chunk.length);
+            this.ctx.onBytes?.(chunk.length);
+          }
+        } finally {
+          w.abort.signal.removeEventListener('abort', onAbort);
+          res.destroy();
+        }
+        if (w.abort.signal.aborted || this.stopped) return;
+        if (seg.pos < Math.min(chunkEnd, seg.end)) throw new Error('Connection closed prematurely');
+        w.retries = 0;
+      } catch (e) {
+        res?.destroy();
+        if (w.abort.signal.aborted || this.stopped || this.fatal) return;
+        if (await this.backoff(w, e, maxRetries)) continue;
+        w.gaveUp = true;
+        throw e;
+      }
+    }
+  }
+
   async runWorker(w) {
+    if (this.item.rangeMode === 'query') return this.runQueryWorker(w);
     const maxRetries = this.settings.connection.connectionRetries ?? 20;
     while (!this.stopped && !this.fatal && !w.abort.signal.aborted) {
       const first = w.seg == null;
