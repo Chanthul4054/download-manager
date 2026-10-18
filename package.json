@@ -1,0 +1,19 @@
+{
+  "name": "opendm",
+  "productName": "OpenDM",
+  "version": "1.0.0",
+  "description": "A multi-connection download manager with browser integration, queues, scheduler, site grabber and video capture.",
+  "main": "src/main/main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "basic-ftp": "6.2.3",
+    "socks": "2.8.10"
+  },
+  "devDependencies": {
+    "electron": "44.9.0"
+  }
+}
