@@ -687,6 +687,16 @@ function registerIpc() {
   handle('util:batch', (pattern, from, to, width) => u.expandBatch(pattern, from, to, width));
   handle('util:openExternal', (url) => /^https?:/.test(url) && shell.openExternal(url));
   handle('util:openPath', (p) => shell.openPath(p));
+  handle('util:ffmpeg', () => require('./engine/ffmpeg').findFfmpeg(store.settings.videoPanel.ffmpegPath));
+  const ytdlp = require('./engine/ytdlp');
+  const binDir = () => path.join(app.getPath('userData'), 'bin');
+  handle('util:ytdlp', () => ytdlp.findYtDlp(store.settings.videoPanel.ytdlpPath, binDir()));
+  handle('util:ytdlpInstall', () => ytdlp.installYtDlp(net, binDir()));
+  handle('util:ytdlpInfo', async (url) => {
+    const bin = ytdlp.findYtDlp(store.settings.videoPanel.ytdlpPath, binDir());
+    if (!bin) return { missing: true };
+    return ytdlp.videoInfo(bin, url, store.settings);
+  });
   handle('util:probe', async (urls, opts = {}) => {
     const out = {};
     await Promise.all(urls.map(async (url) => {
@@ -803,8 +813,12 @@ app.whenReady().then(async () => {
     const payload = {
       url: d.url, referer: d.referrer || d.pageUrl || '', parentPage: d.pageUrl || '', cookies: d.cookies || '', userAgent: d.userAgent || '',
       fileName: d.fileName || undefined, mime: d.mime, size: d.size, kind: d.kind, description: d.title || '', source: 'browser', hls: d.hls,
+      parts: Array.isArray(d.parts) ? d.parts.slice(0, 2) : undefined, ytdlp: d.ytdlp && typeof d.ytdlp === 'object' ? { quality: String(d.ytdlp.quality || 'best') } : undefined, qualities: Array.isArray(d.qualities) ? d.qualities.slice(0, 40) : undefined,
     };
-    newDownload(payload).catch((e) => notify('Could not add download', e.message));
+    newDownload(payload).catch((e) => {
+      console.error('[integration] could not add download:', e);
+      notify('Could not add download', e.message);
+    });
   });
   server.on('links', (d) => openLinks({ links: d.links, referer: d.pageUrl, cookies: d.cookies, userAgent: d.userAgent, title: d.selected ? 'Download selected links' : 'Download all links' }));
   server.start();

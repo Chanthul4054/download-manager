@@ -5,6 +5,8 @@ const { EventEmitter } = require('events');
 const { HttpDownload } = require('./engine/http-download');
 const { FtpDownload } = require('./engine/ftp-download');
 const { HlsDownload } = require('./engine/hls-download');
+const { MuxedDownload, muxedStats } = require('./engine/muxed-download');
+const { YtDlpDownload, isVideoPage } = require('./engine/ytdlp');
 const { RateLimiter } = require('./engine/limiter');
 const u = require('./util');
 
@@ -53,8 +55,11 @@ class DownloadManager extends EventEmitter {
   }
 
   publicItem(d) {
-    const { segments, auth, cookies, ...rest } = d;
-    return { ...rest, hasAuth: !!auth, segmentCount: segments ? segments.length : 0, active: this.engines.has(d.id) };
+    const { segments, auth, cookies, parts, ...rest } = d;
+    return {
+      ...rest, hasAuth: !!auth, segmentCount: segments ? segments.length : 0, active: this.engines.has(d.id),
+      parts: parts ? parts.map((x) => ({ role: x.role, label: x.label, size: x.size, ext: x.ext, done: !!x.done })) : undefined,
+    };
   }
 
   list() {
@@ -139,9 +144,9 @@ class DownloadManager extends EventEmitter {
 
   // Helps the "Download File Info" dialog: suggested name/category/folder for a URL.
   async describe(url, opts = {}) {
-    const kind = this.kindFor(url, opts.kind);
-    let info = { size: null, type: opts.mime || '', resumable: null, fileName: null };
-    if (kind === 'http' && opts.probe !== false) {
+    const kind = opts.parts?.length ? 'muxed' : this.kindFor(url, opts.kind === 'muxed' ? null : opts.kind);
+    let info = { size: opts.size || null, type: opts.mime || '', resumable: null, fileName: null };
+    if (kind === 'http' && opts.probe !== false && !isGoogleVideo(url)) {
       try {
         const headers = {};
         if (opts.referer) headers.Referer = opts.referer;
@@ -161,6 +166,8 @@ class DownloadManager extends EventEmitter {
 
   kindFor(url, explicit) {
     if (explicit) return explicit;
+    if (isGoogleVideo(url)) return 'http';
+    if (isVideoPage(url)) return 'ytdlp';
     if (/^ftp:/i.test(url)) return 'ftp';
     if (/\.m3u8(\?|#|$)/i.test(url)) return 'hls';
     return 'http';
@@ -191,13 +198,23 @@ class DownloadManager extends EventEmitter {
     }
     if (dup && action === 'overwrite') this.remove([dup.id], false);
 
-    const fileName = this.guessName(url, opts.fileName, opts.mime);
+    const parts = Array.isArray(opts.parts) && opts.parts.length ? opts.parts.map((x) => ({
+      role: x.role === 'audio' ? 'audio' : 'video', url: String(x.url), size: Number(x.size) || null, ext: String(x.ext || '').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'bin',
+      label: x.label ? String(x.label).slice(0, 80) : '', contentType: x.mime || '',
+    })) : null;
+    let fileName = this.guessName(url, opts.fileName, opts.mime);
+    if (!parts && this.kindFor(url, opts.kind) === 'ytdlp' && !opts.fileName) fileName = 'video.mp4';
+    if (parts) fileName = u.sanitizeFileName(fileName.replace(/\.(mp4|webm|mkv|m4a|weba|bin)$/i, '') + '.' + containerFor(parts));
     const category = opts.category || this.categoryForName(fileName);
     const saveDir = opts.saveDir || this.folderForCategory(category);
+    const gv = !parts && isGoogleVideo(url);
     const item = {
       id: u.id(),
       url,
-      kind: this.kindFor(url, opts.kind),
+      kind: parts ? 'muxed' : this.kindFor(url, opts.kind),
+      parts,
+      ytdlp: !parts && this.kindFor(url, opts.kind) === 'ytdlp' ? { quality: String(opts.ytdlp?.quality || 'best') } : undefined,
+      rangeMode: gv ? 'query' : undefined,
       fileName,
       nameLocked: !!opts.fileName,
       saveDir,
@@ -209,7 +226,7 @@ class DownloadManager extends EventEmitter {
       userAgent: opts.userAgent || '',
       auth: opts.auth && opts.auth.user ? opts.auth : null,
       status: 'paused',
-      size: opts.size || null,
+      size: parts ? (parts.every((x) => x.size) ? parts.reduce((a, x) => a + x.size, 0) : null) : gv ? Number(new URL(url).searchParams.get('clen')) || opts.size || null : opts.size || null,
       downloaded: 0,
       resumable: null,
       added: Date.now(),
@@ -254,8 +271,9 @@ class DownloadManager extends EventEmitter {
       limiters: () => [this.globalLimiter],
       maxConnFor: (url) => this.maxConnFor(url),
       onBytes: (n) => this.onBytes(n),
+      binDir: path.join(this.store.dir, 'bin'),
     };
-    const Engine = item.kind === 'ftp' ? FtpDownload : item.kind === 'hls' ? HlsDownload : HttpDownload;
+    const Engine = { ftp: FtpDownload, hls: HlsDownload, muxed: MuxedDownload, ytdlp: YtDlpDownload }[item.kind] || HttpDownload;
     const eng = new Engine(item, ctx);
     this.engines.set(id, eng);
     item.status = 'downloading';
@@ -319,6 +337,8 @@ class DownloadManager extends EventEmitter {
       if (exists && !item.overwrite && this.settings.downloads.existingFileAction !== 'overwrite') dest = await u.uniquePath(dest);
       if (exists && (item.overwrite || this.settings.downloads.existingFileAction === 'overwrite')) await fs.promises.rm(dest, { force: true });
       await u.moveFile(item.tempPath, dest);
+      for (const x of item.extraFiles || []) await u.moveFile(x.temp, await u.uniquePath(path.join(item.saveDir, u.sanitizeFileName(x.name))));
+      item.extraFiles = null;
       item.fileName = path.basename(dest);
       item.savedPath = dest;
       item.status = 'complete';
@@ -381,6 +401,8 @@ class DownloadManager extends EventEmitter {
       }
       await fs.promises.rm(item.tempPath, { force: true }).catch(() => {});
       await fs.promises.rm(item.tempPath + '.segs', { recursive: true, force: true }).catch(() => {});
+      for (const x of item.parts || []) if (x.tempPath) await fs.promises.rm(x.tempPath, { force: true }).catch(() => {});
+      await fs.promises.rm(item.tempPath + '.ytdlp', { recursive: true, force: true }).catch(() => {});
       if (deleteFiles && item.savedPath) await fs.promises.rm(item.savedPath, { force: true }).catch(() => {});
       this.store.downloads = this.items.filter((d) => d.id !== id);
     }
@@ -404,6 +426,12 @@ class DownloadManager extends EventEmitter {
     await fs.promises.rm(item.tempPath + '.segs', { recursive: true, force: true }).catch(() => {});
     Object.assign(item, { status: 'paused', segments: null, downloaded: 0, size: null, resumable: null, error: null, statusText: '', savedPath: null, completedAt: null });
     if (item.hls) item.hls = { variant: item.hls.variant };
+    await fs.promises.rm(item.tempPath + '.ytdlp', { recursive: true, force: true }).catch(() => {});
+    for (const x of item.parts || []) {
+      if (x.tempPath) await fs.promises.rm(x.tempPath, { force: true }).catch(() => {});
+      Object.assign(x, { segments: null, done: false, downloaded: 0, resumable: null });
+    }
+    if (item.parts) item.size = item.parts.every((x) => x.size) ? item.parts.reduce((a, x) => a + x.size, 0) : null;
     item.overwrite = true;
     this.touch(item);
     if (startNow) this.start(id);
@@ -452,6 +480,7 @@ class DownloadManager extends EventEmitter {
     if (eng) return eng.stats();
     const it = this.get(id);
     if (!it) return null;
+    if (it.parts) return muxedStats(it);
     return {
       downloaded: it.downloaded || 0, size: it.size, rate: 0, eta: null, resumable: it.resumable, connections: [],
       segments: (it.segments || []).map((s) => [s.start, s.end === Infinity ? null : s.end, s.pos]),
@@ -481,4 +510,22 @@ class DownloadManager extends EventEmitter {
   }
 }
 
-module.exports = { DownloadManager };
+function isGoogleVideo(url) {
+  try {
+    const x = new URL(url);
+    return /(^|\.)googlevideo\.com$/i.test(x.hostname) && x.pathname.startsWith('/videoplayback') && Number(x.searchParams.get('clen')) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// Container that can hold every part without re-encoding.
+function containerFor(parts) {
+  const exts = parts.map((x) => x.ext.toLowerCase());
+  if (parts.length === 1) return exts[0] === 'webm' && parts[0].role === 'audio' ? 'weba' : exts[0];
+  if (exts.every((e) => ['mp4', 'm4a', 'm4v'].includes(e))) return 'mp4';
+  if (exts.every((e) => ['webm', 'weba'].includes(e))) return 'webm';
+  return 'mkv';
+}
+
+module.exports = { DownloadManager, isGoogleVideo, containerFor };
