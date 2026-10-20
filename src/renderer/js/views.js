@@ -1,4 +1,4 @@
-import { api, h, icon, bytes, rate, duration, fileBadge, params, check, select, field, applyAppearance, toast, extOf } from './common.js';
+import { api, h, icon, bytes, rate, duration, fileBadge, params, check, select, field, applyAppearance, toast, extOf, resizableColumns } from './common.js';
 
 async function boot() {
   const st = await api.invoke('state');
@@ -32,7 +32,7 @@ export async function mountProgress(root) {
   const canvas = h('canvas', { class: 'segmap', height: 18 });
   const connBody = h('tbody');
   const conns = h('div', { class: 'table-wrap', style: { maxHeight: '140px', border: '1px solid var(--border)', borderRadius: '5px' } },
-    h('table', { class: 'grid' }, h('thead', {}, h('tr', {}, h('th', { style: { width: '44px' } }, 'N.'), h('th', { style: { width: '120px' } }, 'Downloaded'), h('th', { style: { width: '260px' } }, 'Info'))), connBody));
+    resizableColumns(h('table', { class: 'grid' }, h('thead', {}, h('tr', {}, h('th', { style: { width: '44px' } }, 'N.'), h('th', { style: { width: '120px' } }, 'Downloaded'), h('th', { style: { width: '260px' } }, 'Info'))), connBody)));
   const detailsBox = h('div', { class: 'col' }, h('div', { class: 'hint' }, 'Start positions and download progress by connections'), canvas,
     h('div', { class: 'legend' }, h('span', {}, h('i', { style: { background: 'var(--seg-done)' } }), 'downloaded'), h('span', {}, h('i', { style: { background: 'var(--seg-start)' } }), 'connection start'), h('span', {}, h('i', { style: { background: 'var(--seg-todo)', border: '1px solid var(--border)' } }), 'remaining')), conns);
 
@@ -398,7 +398,7 @@ export async function mountLinks(root) {
     paint();
   };
   const table = h('div', { class: 'table-wrap', style: { border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--surface)' } },
-    h('table', { class: 'grid' }, h('thead', {}, h('tr', {}, h('th', { style: { width: '32px' } }, ''), h('th', { style: { width: '240px' } }, 'File name'), h('th', { style: { width: '90px' } }, 'Size'), h('th', { style: { width: '120px' } }, 'Type'), h('th', { style: { width: '160px' } }, 'Description'), h('th', { style: { width: '380px' } }, 'Address'))), tbody));
+    resizableColumns(h('table', { class: 'grid' }, h('thead', {}, h('tr', {}, h('th', { style: { width: '32px' } }, ''), h('th', { style: { width: '240px' } }, 'File name'), h('th', { style: { width: '90px' } }, 'Size'), h('th', { style: { width: '120px' } }, 'Type'), h('th', { style: { width: '160px' } }, 'Description'), h('th', { style: { width: '380px' } }, 'Address'))), tbody)));
   root.append(h('div', { class: 'modal-body', style: { overflow: 'hidden' } },
     h('div', { class: 'row' },
       h('div', { class: 'hint grow' }, 'Check the files you want to download and click OK. Sizes and types are checked in the background.'),

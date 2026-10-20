@@ -1,4 +1,4 @@
-import { api, h, icon, bytes, rate, duration, date, fileBadge, statusText, contextMenu, applyAppearance, playSound, toast, confirmDialog, promptDialog } from './common.js';
+import { api, h, icon, bytes, rate, duration, date, fileBadge, statusText, contextMenu, applyAppearance, playSound, toast, confirmDialog, promptDialog, resizableColumns } from './common.js';
 import * as D from './dialogs.js';
 
 const COLUMNS = {
@@ -62,6 +62,7 @@ export async function mountMain(root) {
   headRow = h('tr');
   tableBody = h('tbody');
   const table = h('table', { class: 'grid', role: 'grid', 'aria-label': 'Downloads' }, h('thead', {}, headRow), tableBody);
+  resizableColumns(table, (th, w) => api.invoke('settings:save', { appearance: { columnWidths: { [th.dataset.col]: w } } }));
   emptyEl = h('div', { class: 'empty hidden' });
   const wrap = h('div', { class: 'table-wrap', tabindex: '0' }, table, emptyEl);
   statusEl = h('div', { class: 'statusbar' });
@@ -481,7 +482,6 @@ function renderHead() {
     const th = h('th', {
       'data-col': c, style: { width: w + 'px' }, class: sorted ? 'sorted' : '', 'data-dir': a.sort.dir === 'desc' ? '▾' : '▴', draggable: 'true', title: COLUMNS[c].label,
       onclick: (e) => {
-        if (e.target.classList.contains('resizer')) return;
         const key = c === 'added' ? 'added' : c;
         if (['queue', 'connections'].includes(c)) return;
         const dir = a.sort.key === key && a.sort.dir === 'asc' ? 'desc' : 'asc';
@@ -506,19 +506,6 @@ function renderHead() {
       const cols = a.columns.filter((x) => x !== from);
       cols.splice(cols.indexOf(c), 0, from);
       api.invoke('settings:replaceList', 'appearance', 'columns', cols);
-    });
-    th.querySelector('.resizer').addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const startX = e.clientX, startW = th.offsetWidth;
-      const move = (ev) => (th.style.width = Math.max(30, startW + ev.clientX - startX) + 'px');
-      const up = () => {
-        removeEventListener('mousemove', move);
-        removeEventListener('mouseup', up);
-        api.invoke('settings:save', { appearance: { columnWidths: { [c]: th.offsetWidth } } });
-      };
-      addEventListener('mousemove', move);
-      addEventListener('mouseup', up);
     });
     return th;
   }));

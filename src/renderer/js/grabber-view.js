@@ -1,6 +1,9 @@
-import { api, h, icon, bytes, params, check, select, field, folderInput, applyAppearance, toast, modal, fileBadge, confirmDialog } from './common.js';
+import { api, h, icon, bytes, params, check, select, field, folderInput, applyAppearance, toast, modal, fileBadge, confirmDialog, resizableColumns } from './common.js';
 
 const STEPS = ['Start page', 'Save files', 'Pages to explore', 'Files to download', 'Explore & download'];
+// The files table is rebuilt on every repaint, so resized widths live here.
+const FILE_COLUMNS = ['', 'File', 'Size', 'Status', 'Description', 'Address'];
+const fileColWidths = [32, 220, 90, 100, 160, 360];
 const PRESETS = [['images', 'Images'], ['audio', 'Audio'], ['video', 'Video'], ['documents', 'Documents'], ['archives', 'Archives'], ['programs', 'Programs'], ['all', 'All files']];
 
 export async function mountGrabber(root) {
@@ -195,7 +198,8 @@ export async function mountGrabber(root) {
       h('div', { class: 'statgrid' }, stat('Pages found', s.pagesFound), stat('Pages explored', s.explored), stat('Files found', s.filesFound), stat('Matched', s.matched), stat('Downloaded', s.downloaded), stat('Errors', s.errors)),
       h('div', { class: 'row', style: { flex: 1, minHeight: '220px', alignItems: 'stretch' } }, pagesBox,
         h('div', { class: 'table-wrap', style: { border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--surface)' } },
-          h('table', { class: 'grid' }, h('thead', {}, h('tr', {}, h('th', { style: { width: '32px' } }, ''), h('th', { style: { width: '220px' } }, 'File'), h('th', { style: { width: '90px' } }, 'Size'), h('th', { style: { width: '100px' } }, 'Status'), h('th', { style: { width: '160px' } }, 'Description'), h('th', { style: { width: '360px' } }, 'Address'))), tbody),
+          resizableColumns(h('table', { class: 'grid' }, h('thead', {}, h('tr', {}, FILE_COLUMNS.map((label, i) => h('th', { style: { width: fileColWidths[i] + 'px' } }, label)))), tbody),
+            (th, w) => (fileColWidths[th.cellIndex] = w)),
           files.length ? null : h('div', { class: 'empty' }, h('div', {}, h('div', { class: 'big' }, running ? 'Exploring…' : 'No files yet'), h('div', {}, running ? 'Matching files appear here as they are found.' : 'Click "Start exploring" to search the site.'))))),
     ];
   }
