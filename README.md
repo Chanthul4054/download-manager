@@ -14,6 +14,9 @@ Node.js. It comes with a Chrome/Edge extension that hands browser downloads and 
   [yt-dlp](https://github.com/yt-dlp/yt-dlp). Separate video and audio streams are merged with FFmpeg.
 - **Queues and scheduler**: run several files at once, retry failed ones, start and stop on a
   schedule, and shut down, sleep or exit when done.
+- **LinkGrabber**: collect links from the clipboard, the browser or pasted text, check them
+  online (name, size, offline), group split archives into packages, filter by host or file type,
+  and start only what you want. Optional deep analysis and auto-confirm.
 - **Site grabber**: crawl a website and download the files that match your filters.
 - **Speed limiter and download quotas** (X MB every Y hours).
 - **Proxy support**: system, PAC, HTTP/HTTPS/FTP and SOCKS4/5.

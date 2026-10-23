@@ -7,6 +7,7 @@ const { NetContext } = require('./engine/net');
 const { DownloadManager } = require('./manager');
 const { QueueManager } = require('./queues');
 const { GrabberRun, newProject, FILE_PRESETS } = require('./grabber');
+const { LinkGrabber } = require('./linkgrabber');
 const { IntegrationServer } = require('./integration');
 const { parseArgs } = require('./cli');
 const { powerAction, cancelShutdown } = require('./power');
@@ -27,7 +28,7 @@ if (!app.requestSingleInstanceLock()) {
 }
 app.setAppUserModelId('com.opendm.app');
 
-let store, net, manager, queues, server, tray, mainWin, dropWin;
+let store, net, manager, queues, linkGrabber, server, tray, mainWin, dropWin;
 const views = new Map(); // key -> BrowserWindow
 const pending = new Map(); // token -> payload for dialog windows
 const grabRuns = new Map(); // projectId -> GrabberRun
@@ -279,7 +280,13 @@ function pollClipboard() {
   if (!text || text === lastClip) return;
   const first = lastClip === '';
   lastClip = text;
-  if (first || text.length > 2048 || /\s/.test(text)) return;
+  if (first) return;
+  if (store.settings.linkGrabber.clipboard) {
+    const links = u.extractUrls(text.slice(0, 1024 * 1024)).filter((url) => !manager.findDuplicate(url)).map((url) => ({ url }));
+    if (links.length && linkGrabber.add({ links, source: 'clipboard' })) openLinkGrabber(true);
+    return;
+  }
+  if (text.length > 2048 || /\s/.test(text)) return;
   if (!/^(https?|ftp):\/\//i.test(text)) return;
   const ext = u.extOf(new URL(text).pathname);
   if (!ext || !u.splitList(store.settings.fileTypes.capture).some((p) => u.wildcardMatch(p, ext))) return;
@@ -321,6 +328,7 @@ function buildMenu() {
         { label: 'Add &batch download...', accelerator: 'CmdOrCtrl+B', click: cmd('batch') },
         { label: 'Add batch download from &clipboard', click: () => batchFromClipboard() },
         { type: 'separator' },
+        { label: '&LinkGrabber...', accelerator: 'CmdOrCtrl+L', click: () => openLinkGrabber() },
         { label: 'Run site &grabber', accelerator: 'CmdOrCtrl+G', click: () => openGrabber() },
         { label: 'Show &drop target', type: 'checkbox', checked: !!(dropWin && !dropWin.isDestroyed()), click: () => toggleDropTarget() },
         { type: 'separator' },
@@ -415,6 +423,7 @@ function buildMenu() {
         { label: 'Browser &extension setup...', click: cmd('help', 'extension') },
         { label: 'Open browser extension folder', click: () => shell.openPath(extensionDir()) },
         { label: '&Scheduler and queues', click: cmd('help', 'queues') },
+        { label: '&LinkGrabber help', click: cmd('help', 'linkgrabber') },
         { label: '&Grabber help', click: cmd('help', 'grabber') },
         { label: 'Tip of the &Day...', click: cmd('tip') },
         { type: 'separator' },
@@ -443,6 +452,7 @@ function updateTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open OpenDM', click: showMain },
     { label: 'Add new download...', click: cmd('addUrl') },
+    { label: 'LinkGrabber', click: () => openLinkGrabber() },
     { label: 'Run site grabber', click: () => openGrabber() },
     { label: 'Show drop target', type: 'checkbox', checked: !!(dropWin && !dropWin.isDestroyed()), click: () => toggleDropTarget() },
     { type: 'separator' },
@@ -485,13 +495,24 @@ function openGrabber(projectId) {
   openView('grabber', projectId ? { project: projectId } : {}, { key: 'grabber:' + (projectId || 'new'), width: 980, height: 680, minWidth: 760, minHeight: 480, title: 'Site Grabber', maximizable: true });
 }
 
+function openLinkGrabber(background = false) {
+  openView('linkgrabber', {}, { key: 'linkgrabber', width: 1080, height: 660, minWidth: 760, minHeight: 420, title: 'LinkGrabber', maximizable: true, inactive: background, background });
+}
+
 function batchFromClipboard() {
   const urls = u.extractUrls(clipboard.readText());
   if (!urls.length) {
     dialog.showMessageBox({ type: 'info', message: 'The clipboard does not contain any web addresses.' });
     return;
   }
-  openLinks({ links: urls.map((url) => ({ url })), title: 'Batch download from clipboard' });
+  collectLinks({ links: urls.map((url) => ({ url })), title: 'Batch download from clipboard', source: 'clipboard' });
+}
+
+/** A list of links to choose from: goes to the LinkGrabber, or the "Download all links" dialog. */
+function collectLinks(payload) {
+  if (!store.settings.linkGrabber.useForLinkLists) return openLinks(payload);
+  linkGrabber.add({ links: payload.links, referer: payload.referer, cookies: payload.cookies, userAgent: payload.userAgent, source: payload.source });
+  openLinkGrabber();
 }
 
 function openLinks(payload) {
@@ -519,7 +540,7 @@ async function importList(kind) {
   } else {
     const urls = u.extractUrls(text);
     if (!urls.length) return dialog.showMessageBox(mainWin, { type: 'info', message: 'No web addresses were found in this file.' });
-    openLinks({ links: urls.map((url) => ({ url })), title: 'Import downloads from text file' });
+    collectLinks({ links: urls.map((url) => ({ url })), title: 'Import downloads from text file', source: 'import' });
   }
 }
 
@@ -677,6 +698,7 @@ function registerIpc() {
     if (view === 'grabber') return openGrabber(params?.project);
     if (view === 'progress') return openProgress(params.id);
     if (view === 'links') return openLinks(opts?.payload || {});
+    if (view === 'linkgrabber') return openLinkGrabber();
     openView(view, params, opts);
   });
   handle('win:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
@@ -773,6 +795,19 @@ function registerIpc() {
     return ids.length;
   });
   handle('grabber:open', (id) => openGrabber(id));
+
+  handle('lg:state', () => linkGrabber.snapshot());
+  handle('lg:add', (opts) => linkGrabber.add({ ...opts, source: opts?.source || 'manual' }));
+  handle('lg:confirm', (ids, opts) => linkGrabber.confirm(ids, opts));
+  handle('lg:remove', (ids) => linkGrabber.remove(ids));
+  handle('lg:removeOffline', () => linkGrabber.removeOffline());
+  handle('lg:clear', () => linkGrabber.clear());
+  handle('lg:enable', (ids, on) => linkGrabber.setEnabled(ids, on));
+  handle('lg:updatePackage', (id, patch) => linkGrabber.updatePackage(id, patch));
+  handle('lg:renameLink', (id, name) => linkGrabber.renameLink(id, name));
+  handle('lg:merge', (ids, name) => linkGrabber.merge(ids, name));
+  handle('lg:splitByHost', (ids) => linkGrabber.splitByHost(ids));
+  handle('lg:recheck', (ids) => linkGrabber.recheck(ids));
 }
 
 // ---- lifecycle ---------------------------------------------------------------------------------
@@ -783,6 +818,7 @@ async function quitApp() {
   saveWindowBounds();
   queues.dispose();
   for (const r of grabRuns.values()) r.stop();
+  linkGrabber.dispose();
   manager.stopAll();
   const deadline = Date.now() + 4000;
   while (manager.activeCount() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
@@ -812,6 +848,15 @@ app.whenReady().then(async () => {
   await applyProxy();
   manager = new DownloadManager(store, net);
   queues = new QueueManager(store, manager);
+  linkGrabber = new LinkGrabber(store, net, manager);
+  let lgTimer = null;
+  linkGrabber.on('changed', () => {
+    if (lgTimer) return;
+    lgTimer = setTimeout(() => {
+      lgTimer = null;
+      broadcast('lg:changed', linkGrabber.snapshot());
+    }, 250);
+  });
   server = new IntegrationServer(() => store.settings, VERSION);
   server.on('error', (e) => {
     if (e.code === 'EADDRINUSE') notify('Browser integration unavailable', `Port ${store.settings.general.integrationPort} is in use. Change it in Options → General.`);
@@ -827,7 +872,7 @@ app.whenReady().then(async () => {
       notify('Could not add download', e.message);
     });
   });
-  server.on('links', (d) => openLinks({ links: d.links, referer: d.pageUrl, cookies: d.cookies, userAgent: d.userAgent, title: d.selected ? 'Download selected links' : 'Download all links' }));
+  server.on('links', (d) => collectLinks({ links: d.links, referer: d.pageUrl, cookies: d.cookies, userAgent: d.userAgent, title: d.selected ? 'Download selected links' : 'Download all links', source: 'browser' }));
   server.start();
 
   manager.on('changed', (it) => broadcast('dl:changed', it));

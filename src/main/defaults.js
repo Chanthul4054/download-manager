@@ -116,6 +116,22 @@ function defaultSettings() {
       ytdlpPath: '',
     },
     speedLimiter: { enabled: false, kbps: 500 },
+    linkGrabber: {
+      useForLinkLists: true, // "Download all links", clipboard batches and text imports open the LinkGrabber
+      clipboard: false, // collect every address copied to the clipboard
+      deepAnalyse: false, // look for files inside web pages
+      checkThreads: 4,
+      variousPackage: true, // single files share a "Various files" package
+      packageFolders: true, // packages with several files get their own subfolder
+      expandPackages: false,
+      autoConfirm: false,
+      autoConfirmDelaySec: 15,
+      autoStart: true,
+      offlineAction: 'exclude', // exclude | include
+      dupeAction: 'skip', // skip | add (links already in the download list)
+      queueId: 'main',
+      columnWidths: {},
+    },
     lastSaveDirs: {},
   };
 }

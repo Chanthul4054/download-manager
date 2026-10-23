@@ -13,10 +13,12 @@ const INVOKE = new Set([
   'import', 'export', 'batch:clipboard', 'power:run', 'power:cancel', 'app:quit',
   'grabber:list', 'grabber:get', 'grabber:new', 'grabber:save', 'grabber:delete', 'grabber:run', 'grabber:stop',
   'grabber:setChecked', 'grabber:addToList', 'grabber:open',
+  'lg:state', 'lg:add', 'lg:confirm', 'lg:remove', 'lg:removeOffline', 'lg:clear', 'lg:enable', 'lg:updatePackage', 'lg:renameLink',
+  'lg:merge', 'lg:splitByHost', 'lg:recheck',
 ]);
 const EVENTS = new Set([
   'dl:changed', 'dl:removed', 'dl:progress', 'q:changed', 'settings', 'categories', 'menu', 'sound', 'payload',
-  'grabber:update', 'grabber:done', 'grabber:error', 'grabber:list',
+  'grabber:update', 'grabber:done', 'grabber:error', 'grabber:list', 'lg:changed',
 ]);
 
 contextBridge.exposeInMainWorld('api', {

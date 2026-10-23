@@ -12,6 +12,9 @@ function deepMerge(base, over) {
   return out;
 }
 
+// File names whose store property is named differently.
+const FIELDS = { grabber: 'grabberProjects', linkgrabber: 'linkGrabber' };
+
 // JSON-file persistence with debounced atomic writes.
 class Store {
   constructor(dir) {
@@ -22,6 +25,7 @@ class Store {
     this.queues = readJson(this.file('queues'), null) || defaultQueues();
     this.downloads = readJson(this.file('downloads'), []);
     this.grabberProjects = readJson(this.file('grabber'), []);
+    this.linkGrabber = readJson(this.file('linkgrabber'), { packages: [] });
   }
 
   file(name) {
@@ -36,12 +40,12 @@ class Store {
   async flush(name) {
     clearTimeout(this.timers[name]);
     delete this.timers[name];
-    const data = name === 'downloads' ? this.serializeDownloads() : this[name === 'grabber' ? 'grabberProjects' : name];
+    const data = name === 'downloads' ? this.serializeDownloads() : this[FIELDS[name] || name];
     await writeJsonAtomic(this.file(name), data);
   }
 
   async flushAll() {
-    await Promise.all(['settings', 'categories', 'queues', 'downloads', 'grabber'].map((n) => this.flush(n).catch(() => {})));
+    await Promise.all(['settings', 'categories', 'queues', 'downloads', 'grabber', 'linkgrabber'].map((n) => this.flush(n).catch(() => {})));
   }
 
   serializeDownloads() {

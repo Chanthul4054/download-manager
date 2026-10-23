@@ -223,6 +223,7 @@ export function optionsDialog(initial = 'general') {
       h('fieldset', {}, h('legend', {}, 'Behavior'), h('div', { class: 'col' },
         field('If the same address is added again', select([['ask', 'Ask me'], ['number', 'Add it with a numbered file name'], ['overwrite', 'Replace the existing download'], ['resume', 'Use the existing download']], dl.duplicateAction, (v) => (dl.duplicateAction = v))),
         field('If the file already exists', select([['rename', 'Save with a numbered name'], ['overwrite', 'Overwrite it']], dl.existingFileAction, (v) => (dl.existingFileAction = v))),
+        field('Downloads at the same time', h('div', { class: 'row' }, num(dl, 'maxSimultaneous', { min: 0, max: 64 }), h('span', { class: 'hint' }, 'Others wait for a free slot. 0 = no limit.'))),
         check('Ignore file modification changes on the server when resuming', dl.ignoreModTimeChanges, (v) => (dl.ignoreModTimeChanges = v)),
         field('User-Agent for manual downloads', txt(dl, 'userAgent', { placeholder: 'Default (current Chrome)' })))))],
     proxy: ['Proxy / Socks', 'globe', () => {
@@ -567,6 +568,16 @@ const HELP = {
     h('p', {}, 'Each queue can start and stop at set times on chosen days or a single date. When it finishes it can open a file, exit OpenDM, or shut down, restart, sleep or hibernate the computer (with a 30-second chance to cancel). These actions do not run when you stop the queue yourself.'),
     h('h2', {}, 'Download limits'),
     h('p', {}, 'Options → Connection → Download limits caps how much is downloaded per period (for example 200 MB per hour). Downloads pause at the limit and resume on their own.')]],
+  linkgrabber: ['LinkGrabber', () => [
+    h('h2', {}, 'LinkGrabber'),
+    h('p', {}, 'The LinkGrabber (Tasks → LinkGrabber, Ctrl+L) is a waiting area for links. Links you add are checked online in the background — name, size and whether the file still exists — and sorted into packages before anything is downloaded.'),
+    h('ul', {},
+      h('li', {}, 'Add links by pasting text with "Add links", from "Download all links" in the browser, from a clipboard batch or a text-file import. Turn on "Collect every address copied to the clipboard" to gather links while you browse.'),
+      h('li', {}, 'Parts of a split archive (name.part1.rar, name.z01, name.7z.001 …) are grouped into one package. Single files go into "Various files", dead links into "Offline".'),
+      h('li', {}, 'With deep analysis, a web page address is replaced by the files it links to.'),
+      h('li', {}, 'Use the filters on the left to hide hosts, file types or offline links. "Start all downloads" adds what is visible and checked.'),
+      h('li', {}, 'Right-click to rename packages, choose a save folder, move links into a new package, split a package by host, or check links again.')),
+    h('p', {}, 'Packages with several files are saved into a subfolder named after the package. Auto-confirm can add links to the download list on its own a few seconds after the last check.')]],
   grabber: ['Site grabber', () => [
     h('h2', {}, 'Site grabber'),
     h('p', {}, 'The grabber explores a web site and collects files that match your filters — for example every image or every PDF.'),
