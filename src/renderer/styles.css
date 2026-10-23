@@ -177,15 +177,19 @@ table.grid th {
   position: sticky; top: 0; z-index: 1; background: var(--surface-2); color: var(--text-2); font-weight: 600; text-align: left;
   height: 26px; padding: 0 8px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-table.grid th .resizer { position: absolute; right: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 2; }
-table.grid th { position: sticky; }
+table.grid th .resizer { position: absolute; right: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; touch-action: none; }
+table.grid th .resizer:hover, table.grid.resizing th .resizer:active { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+table.grid.resizing, table.grid.resizing * { cursor: col-resize !important; }
+/* Trailing filler column soaks up spare width, so resized columns keep exactly the width they were dragged to. */
+table.grid tr::after { content: ''; display: table-cell; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+table.grid thead tr::after { position: sticky; top: 0; z-index: 1; background: var(--surface-2); border-bottom-color: var(--border); }
 table.grid th.sorted::after { content: attr(data-dir); margin-left: 4px; color: var(--accent); }
 table.grid td { height: var(--row); padding: 0 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
-table.grid tr.sel td { background: var(--sel); }
-table.grid tr.sel.focus td { background: var(--sel-strong); }
-table.grid tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
-table.grid tbody tr.sel:hover td { background: var(--sel-strong); }
+table.grid tr.sel td, table.grid tr.sel::after { background: var(--sel); }
+table.grid tr.sel.focus td, table.grid tr.sel.focus::after { background: var(--sel-strong); }
+table.grid tbody tr:hover td, table.grid tbody tr:hover::after { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+table.grid tbody tr.sel:hover td, table.grid tbody tr.sel:hover::after { background: var(--sel-strong); }
 .namecell { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .namecell .ellipsis { min-width: 0; }
 .ficon { width: 18px; height: 18px; border-radius: 4px; flex: none; display: grid; place-items: center; font-size: 8.5px; font-weight: 700; color: #fff; letter-spacing: -.02em; }
@@ -288,3 +292,11 @@ canvas.segmap { width: 100%; height: 18px; border: 1px solid var(--border); bord
 ::-webkit-scrollbar-corner { background: transparent; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* LinkGrabber */
+table.grid tbody tr.pkg:not(.sel):not(:hover) td { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+table.grid tr.pkg .twist { width: 14px; display: inline-flex; color: var(--text-3); cursor: pointer; }
+table.grid tr.disabled td { color: var(--text-3); }
+table.grid tr.disabled .ficon { opacity: .5; }
+.namecell input[type=checkbox] { margin: 0; flex: none; }
+.sidebar label.tree-node input { margin: 0; }

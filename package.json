@@ -27,6 +27,10 @@
     "appId": "com.opendm.app",
     "productName": "OpenDM",
     "copyright": "OpenDM contributors",
+    "electronLanguages": [
+      "en-US"
+    ],
+    "compression": "maximum",
     "directories": {
       "output": "dist"
     },

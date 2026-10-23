@@ -1,4 +1,5 @@
 'use strict';
+const { performance } = require('perf_hooks');
 
 // Token bucket. rate is bytes/sec; 0 or null = unlimited.
 class RateLimiter {
@@ -39,19 +40,26 @@ function throttle(stream, limiters) {
   });
 }
 
-// Moving-average speed meter over a sliding window.
+// Moving-average speed meter over a sliding window. Bytes are summed into 100 ms buckets on a
+// monotonic clock, so the cost does not grow with the number of network chunks.
+const BUCKET_MS = 100;
 class SpeedMeter {
   constructor(windowMs = 3000) {
     this.windowMs = windowMs;
-    this.samples = [];
+    this.samples = []; // [bucket start, bytes]
+    this.total = 0;
   }
 
   add(bytes) {
-    this.samples.push([Date.now(), bytes]);
+    const t = Math.floor(performance.now() / BUCKET_MS) * BUCKET_MS;
+    const last = this.samples[this.samples.length - 1];
+    if (last && last[0] === t) last[1] += bytes;
+    else this.samples.push([t, bytes]);
+    this.total += bytes;
   }
 
   rate() {
-    const now = Date.now();
+    const now = performance.now();
     while (this.samples.length && now - this.samples[0][0] > this.windowMs) this.samples.shift();
     if (!this.samples.length) return 0;
     const sum = this.samples.reduce((a, s) => a + s[1], 0);

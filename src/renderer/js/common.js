@@ -121,8 +121,14 @@ export function fileBadge(name) {
   return h('span', { class: 'ficon', style: { background: EXT_COLORS[ext] || '#6b7280' } }, (ext || '?').slice(0, 4).toUpperCase());
 }
 
+/** Running or waiting for a free slot: something "Stop" applies to. */
+export function isRunning(it) {
+  return it.status === 'downloading' || it.status === 'waiting';
+}
+
 export function statusText(it) {
   if (it.status === 'complete') return 'Complete';
+  if (it.status === 'waiting') return 'Waiting for a free slot';
   if (it.status === 'error') return 'Error' + (it.error ? ': ' + it.error : '');
   if (it.status === 'downloading') {
     const size = it.size || it.estimatedSize;
@@ -246,6 +252,37 @@ document.addEventListener('mousedown', (e) => {
 });
 document.addEventListener('keydown', (e) => e.key === 'Escape' && closeMenu());
 window.addEventListener('blur', closeMenu);
+
+/**
+ * Lets the user drag a header cell's right edge to resize its column. Adds a grip to every
+ * current header cell; headers rendered later should include their own `span.resizer`.
+ * onResize(th, width) runs once a drag ends. Returns the table.
+ */
+export function resizableColumns(table, onResize) {
+  for (const th of table.querySelectorAll('thead th')) if (!th.querySelector('.resizer')) th.append(h('span', { class: 'resizer' }));
+  table.addEventListener('pointerdown', (e) => {
+    const grip = e.target.closest('th > .resizer');
+    if (!grip || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const th = grip.parentElement, startX = e.clientX, startW = th.offsetWidth, draggable = th.draggable;
+    // Header cells may be draggable for reordering; that would hijack the gesture.
+    th.draggable = false;
+    grip.setPointerCapture(e.pointerId);
+    table.classList.add('resizing');
+    const move = (ev) => (th.style.width = Math.max(30, startW + ev.clientX - startX) + 'px');
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('lostpointercapture', () => {
+      grip.removeEventListener('pointermove', move);
+      th.draggable = draggable;
+      table.classList.remove('resizing');
+      if (th.offsetWidth !== startW) onResize?.(th, th.offsetWidth);
+    }, { once: true });
+  });
+  // Swallow the click that ends a drag so it doesn't sort the column.
+  table.addEventListener('click', (e) => e.target.closest('th > .resizer') && e.stopPropagation(), true);
+  return table;
+}
 
 /** items: [{label, onClick, disabled, checked, kbd, sub:[...]} | '-'] */
 export function contextMenu(x, y, items) {
