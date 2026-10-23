@@ -1,7 +1,7 @@
 {
   "name": "opendm",
   "productName": "OpenDM",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A multi-connection download manager with browser integration, queues, scheduler, site grabber and video capture.",
   "main": "src/main/main.js",
   "author": "OpenDM contributors",
