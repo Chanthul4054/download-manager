@@ -3,9 +3,27 @@ const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { SpeedMeter, RateLimiter } = require('./limiter');
+const { performance } = require('perf_hooks');
 const { fileNameFromDisposition } = require('../util');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Errors that retrying will not fix.
+const DISK_ERRORS = new Set(['ENOSPC', 'EDQUOT', 'EROFS', 'EACCES', 'EPERM', 'EFBIG', 'EIO']);
+
+// Retry-After as milliseconds (delta seconds or an HTTP date), or 0.
+function retryAfterMs(header) {
+  if (!header) return 0;
+  const secs = Number(header);
+  const ms = Number.isFinite(secs) ? secs * 1000 : Date.parse(header) - Date.now();
+  return ms > 0 ? Math.min(ms, 5 * 60 * 1000) : 0;
+}
+
+// "bytes a-b/total" → { start, end, total } (total null when "*").
+function parseContentRange(header) {
+  const m = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(String(header || '').trim());
+  return m ? { start: Number(m[1]), end: Number(m[2]), total: m[3] === '*' ? null : Number(m[3]) } : null;
+}
 
 /**
  * Multi-connection HTTP(S) download with dynamic segmentation.
@@ -86,6 +104,8 @@ class HttpDownload extends EventEmitter {
     this.stopped = false;
     this.fatal = null;
     this.startedAt = Date.now();
+    // Per-run measurements on a monotonic clock; reported with the final status.
+    this.metrics = { t0: performance.now(), bytes: 0, ttfbMs: null, redirects: 0, retries: 0, diskMs: 0, peakConnections: 0 };
     this.progressTimer = setInterval(() => this.emitProgress(), 500);
     this.persistTimer = setInterval(() => this.emit('persist'), 3000);
     const it = this.item;
@@ -132,12 +152,31 @@ class HttpDownload extends EventEmitter {
   async finish(kind, err) {
     clearInterval(this.progressTimer);
     clearInterval(this.persistTimer);
+    if (kind === 'complete') {
+      // The bytes on disk must match what the server said it would send.
+      try {
+        const want = this.item.size ?? this.downloaded();
+        const { size } = await this.fh.stat();
+        if (size > want) await this.fh.truncate(want);
+        else if (size < want) throw new Error(`The file is incomplete (${size} of ${want} bytes)`);
+      } catch (e) {
+        kind = 'error';
+        err = e;
+      }
+    }
     try {
       await this.fh?.close();
     } catch { /* ignore */ }
     this.fh = null;
     this.emitProgress();
     this.emit('persist');
+    const m = this.metrics;
+    const elapsedMs = performance.now() - m.t0;
+    this.emit('metrics', {
+      status: kind, error: kind === 'error' ? err?.message || String(err) : null, bytes: m.bytes, elapsedMs: Math.round(elapsedMs),
+      avgMBps: elapsedMs > 0 ? +(m.bytes / 1048576 / (elapsedMs / 1000)).toFixed(2) : 0, ttfbMs: m.ttfbMs, redirects: m.redirects,
+      retries: m.retries, diskMs: Math.round(m.diskMs), peakConnections: m.peakConnections, resumable: !!this.item.resumable,
+    });
     if (kind === 'complete') {
       if (this.item.size == null) this.item.size = this.downloaded();
       this.emit('complete');
@@ -197,6 +236,7 @@ class HttpDownload extends EventEmitter {
   spawn(seg) {
     const w = { seg, abort: new AbortController(), receiving: false, retries: 0, id: ++this.wid };
     this.workers.add(w);
+    if (this.metrics) this.metrics.peakConnections = Math.max(this.metrics.peakConnections, this.workers.size);
     this.runWorker(w)
       .catch((e) => {
         this.lastError = e;
@@ -252,10 +292,7 @@ class HttpDownload extends EventEmitter {
             let wait = 0;
             for (const l of [this.limiter, ...this.ctx.limiters()]) wait = Math.max(wait, l.take(chunk.length));
             if (wait) await sleep(wait);
-            await this.fh.write(chunk, 0, chunk.length, seg.pos);
-            seg.pos += chunk.length;
-            this.meter.add(chunk.length);
-            this.ctx.onBytes?.(chunk.length);
+            await this.write(w, chunk);
           }
         } finally {
           w.abort.signal.removeEventListener('abort', onAbort);
@@ -289,11 +326,13 @@ class HttpDownload extends EventEmitter {
       }
       let res;
       try {
-        ({ res } = await this.ctx.net.request(this.item.url, {
+        let redirects;
+        ({ res, redirects } = await this.ctx.net.request(this.item.url, {
           headers: { ...this.headers(), Range: `bytes=${from}-` },
           auth: this.item.auth,
           signal: w.abort.signal,
         }));
+        if (first) this.metrics.redirects = redirects;
       } catch (e) {
         if (w.abort.signal.aborted || this.stopped) return;
         if (e.code === 'EAUTH') {
@@ -338,10 +377,18 @@ class HttpDownload extends EventEmitter {
 
   async backoff(w, err, maxRetries) {
     this.lastError = err;
+    if (DISK_ERRORS.has(err.code)) {
+      // A full or read-only disk will not recover by retrying.
+      this.fatal = Object.assign(new Error(`Could not write the file: ${err.message}`), { code: err.code });
+      return false;
+    }
     w.retries++;
     if (maxRetries && w.retries > maxRetries) return false;
+    if (this.metrics) this.metrics.retries++;
     this.emit('status', `Retrying (${err.message})...`);
-    await sleep(Math.min(30000, 1000 * 2 ** Math.min(w.retries, 5)));
+    // Exponential backoff with jitter, never sooner than the server's Retry-After.
+    const base = Math.min(30000, 1000 * 2 ** Math.min(w.retries, 5));
+    await sleep(Math.max(err.retryAfter || 0, base * (0.75 + Math.random() * 0.5)));
     return !this.stopped && !w.abort.signal.aborted;
   }
 
@@ -351,7 +398,7 @@ class HttpDownload extends EventEmitter {
     const st = res.statusCode;
     if (st >= 400) {
       res.resume();
-      const err = Object.assign(new Error(`HTTP ${st} ${res.statusMessage || ''}`.trim()), { status: st });
+      const err = Object.assign(new Error(`HTTP ${st} ${res.statusMessage || ''}`.trim()), { status: st, retryAfter: retryAfterMs(res.headers['retry-after']) });
       if ([429, 503].includes(st) && this.workers.size > 1 && !first) {
         // Server limits parallel connections: drop this one and lower the cap.
         it.maxConnections = Math.max(1, this.workers.size - 1);
@@ -366,11 +413,19 @@ class HttpDownload extends EventEmitter {
       throw err;
     }
     const h = res.headers;
-    const total = st === 206 && h['content-range'] ? Number(String(h['content-range']).split('/')[1]) : null;
+    const range = st === 206 ? parseContentRange(h['content-range']) : null;
+    const total = range ? range.total : null;
     const etag = h.etag || null;
     const lastMod = h['last-modified'] || null;
+    // A 206 must cover exactly the bytes asked for; otherwise ranges cannot be trusted.
+    const badRange = st === 206 && (!range || range.start !== from || (range.total != null && range.end >= range.total));
 
     if (first) {
+      if (this.metrics.ttfbMs == null) this.metrics.ttfbMs = Math.round(performance.now() - this.metrics.t0);
+      if (badRange) {
+        res.destroy();
+        throw new Error('The server sent an invalid partial response');
+      }
       it.resumable = st === 206;
       it.size = st === 206 ? total || null : h['content-length'] ? Number(h['content-length']) : null;
       if (!it.resumable && st === 206) it.size = null;
@@ -387,8 +442,8 @@ class HttpDownload extends EventEmitter {
       return true;
     }
 
-    if (st === 200) {
-      // Server ignored Range for a continuation request.
+    if (st === 200 || badRange) {
+      // Server ignored Range for a continuation request, or answered with the wrong bytes.
       res.destroy();
       if (from === 0 && w.seg.start === 0) return this.restartNonResumable(w);
       it.maxConnections = 1;
@@ -399,10 +454,13 @@ class HttpDownload extends EventEmitter {
       return this.restartNonResumable(w);
     }
 
-    if (this.resuming) {
-      this.resuming = false;
-      const changed = (total && it.size && total !== it.size) ||
-        (!this.settings.downloads.ignoreModTimeChanges && ((it.etag && etag && it.etag !== etag) || (it.lastModified && lastMod && it.lastModified !== lastMod)));
+    // Every continuation is checked, not just the first one after a resume: a file replaced on
+    // the server mid-download must not be stitched together from two versions.
+    const resuming = this.resuming;
+    this.resuming = false;
+    const changed = (total && it.size && total !== it.size) ||
+      (!this.settings.downloads.ignoreModTimeChanges && ((it.etag && etag && it.etag !== etag) || (it.lastModified && lastMod && it.lastModified !== lastMod)));
+    if (changed || resuming) {
       if (changed) {
         this.emit('status', 'File changed on server, restarting...');
         res.destroy();
@@ -431,12 +489,11 @@ class HttpDownload extends EventEmitter {
   }
 
   async pump(w, res) {
-    const fh = this.fh;
     const limiters = () => [this.limiter, ...this.ctx.limiters()];
     const onAbort = () => res.destroy();
     w.abort.signal.addEventListener('abort', onAbort, { once: true });
     try {
-      await this.pumpChunks(w, res, fh, limiters);
+      await this.pumpChunks(w, res, limiters);
     } catch (e) {
       if (w.abort.signal.aborted || this.stopped) return;
       throw e;
@@ -445,7 +502,19 @@ class HttpDownload extends EventEmitter {
     }
   }
 
-  async pumpChunks(w, res, fh, limiters) {
+  // Writes one received chunk at the segment's position.
+  async write(w, part) {
+    const seg = w.seg;
+    const t = performance.now();
+    await this.fh.write(part, 0, part.length, seg.pos);
+    this.metrics.diskMs += performance.now() - t;
+    this.metrics.bytes += part.length;
+    seg.pos += part.length;
+    this.meter.add(part.length);
+    this.ctx.onBytes?.(part.length);
+  }
+
+  async pumpChunks(w, res, limiters) {
     for await (let chunk of res) {
       if (w.abort.signal.aborted || this.stopped) break;
       w.receiving = true;
@@ -466,10 +535,7 @@ class HttpDownload extends EventEmitter {
         let wait = 0;
         for (const l of limiters()) wait = Math.max(wait, l.take(part.length));
         if (wait) await sleep(wait);
-        await fh.write(part, 0, part.length, seg.pos);
-        seg.pos += part.length;
-        this.meter.add(part.length);
-        if (this.ctx.onBytes) this.ctx.onBytes(part.length);
+        await this.write(w, part);
       }
       if (seg.pos >= seg.end && !this.absorbNext(w)) {
         res.destroy();

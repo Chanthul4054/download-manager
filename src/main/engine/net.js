@@ -205,7 +205,7 @@ class NetContext {
         err.realm = /realm="([^"]*)"/i.exec(res.headers['www-authenticate'] || '')?.[1] || '';
         throw err;
       }
-      return { res, req, url };
+      return { res, req, url, redirects: hop };
     }
     throw new Error('Too many redirects');
   }
