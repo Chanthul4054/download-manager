@@ -1,4 +1,4 @@
-import { api, h, icon, bytes, rate, duration, fileBadge, params, check, select, field, applyAppearance, toast, extOf, resizableColumns } from './common.js';
+import { api, h, icon, bytes, rate, duration, fileBadge, params, check, select, field, applyAppearance, toast, extOf, resizableColumns, isRunning } from './common.js';
 
 async function boot() {
   const st = await api.invoke('state');
@@ -51,15 +51,15 @@ export async function mountProgress(root) {
 
   const tabBar = h('div', { class: 'tabs' });
   const body = h('div', { class: 'pg' });
-  const pauseBtn = h('button', { class: 'btn', onclick: () => (item.status === 'downloading' ? api.invoke('dl:stop', [id]) : api.invoke('dl:start', [id], false)) });
+  const pauseBtn = h('button', { class: 'btn', onclick: () => (isRunning(item) ? api.invoke('dl:stop', [id]) : api.invoke('dl:start', [id], false)) });
   const detailsBtn = h('button', { class: 'btn', onclick: () => { details = !details; paint(); } });
-  const foot = h('div', { class: 'modal-foot' }, h('div', { class: 'left' }, detailsBtn), pauseBtn, h('button', { class: 'btn', onclick: () => { if (item.status === 'downloading') api.invoke('dl:stop', [id]); close(); } }, 'Cancel'));
+  const foot = h('div', { class: 'modal-foot' }, h('div', { class: 'left' }, detailsBtn), pauseBtn, h('button', { class: 'btn', onclick: () => { if (isRunning(item)) api.invoke('dl:stop', [id]); close(); } }, 'Cancel'));
   const paint = () => {
     tabBar.replaceChildren(...[['status', 'Download status'], ['limiter', 'Speed limiter'], ['complete', 'Options on completion']].map(([k, l]) => h('button', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; paint(); } }, l)));
     if (tab === 'status') body.replaceChildren(statusGrid, h('div', { class: 'bigbar' }, bar), details ? detailsBox : null);
     else body.replaceChildren(tab === 'limiter' ? limiterPane() : completionPane());
     detailsBtn.textContent = details ? '« Hide details' : 'Show details »';
-    pauseBtn.replaceChildren(icon(item.status === 'downloading' ? 'pause' : 'play'), item.status === 'downloading' ? 'Pause' : 'Resume');
+    pauseBtn.replaceChildren(icon(isRunning(item) ? 'pause' : 'play'), isRunning(item) ? 'Pause' : 'Resume');
   };
   root.append(tabBar, h('div', { style: { flex: 1, overflow: 'auto' } }, body), foot);
   paint();
@@ -101,7 +101,7 @@ export async function mountProgress(root) {
     const pct = s.fraction != null && s.hlsSegments ? s.fraction * 100 : size ? (100 * s.downloaded) / size : 0;
     kv.url.textContent = item.url;
     kv.url.title = item.url;
-    kv.status.textContent = item.status === 'downloading' ? item.statusText || 'Receiving data...' : item.status === 'error' ? 'Error: ' + (item.error || '') : item.status === 'complete' ? 'Complete' : 'Paused';
+    kv.status.textContent = isRunning(item) ? item.statusText || 'Receiving data...' : item.status === 'error' ? 'Error: ' + (item.error || '') : item.status === 'complete' ? 'Complete' : 'Paused';
     kv.status.className = item.status === 'error' ? 'status-err' : '';
     kv.size.textContent = s.size ? bytes(s.size) : s.estimatedSize ? '≈ ' + bytes(s.estimatedSize) : '(unknown)';
     kv.done.textContent = `${bytes(s.downloaded, '0 Bytes')}${size ? ` (${pct.toFixed(2)} %)` : ''}`;

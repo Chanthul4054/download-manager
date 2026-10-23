@@ -121,8 +121,14 @@ export function fileBadge(name) {
   return h('span', { class: 'ficon', style: { background: EXT_COLORS[ext] || '#6b7280' } }, (ext || '?').slice(0, 4).toUpperCase());
 }
 
+/** Running or waiting for a free slot: something "Stop" applies to. */
+export function isRunning(it) {
+  return it.status === 'downloading' || it.status === 'waiting';
+}
+
 export function statusText(it) {
   if (it.status === 'complete') return 'Complete';
+  if (it.status === 'waiting') return 'Waiting for a free slot';
   if (it.status === 'error') return 'Error' + (it.error ? ': ' + it.error : '');
   if (it.status === 'downloading') {
     const size = it.size || it.estimatedSize;
