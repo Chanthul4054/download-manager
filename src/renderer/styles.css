@@ -292,3 +292,11 @@ canvas.segmap { width: 100%; height: 18px; border: 1px solid var(--border); bord
 ::-webkit-scrollbar-corner { background: transparent; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* LinkGrabber */
+table.grid tbody tr.pkg:not(.sel):not(:hover) td { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+table.grid tr.pkg .twist { width: 14px; display: inline-flex; color: var(--text-3); cursor: pointer; }
+table.grid tr.disabled td { color: var(--text-3); }
+table.grid tr.disabled .ficon { opacity: .5; }
+.namecell input[type=checkbox] { margin: 0; flex: none; }
+.sidebar label.tree-node input { margin: 0; }

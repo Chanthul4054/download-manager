@@ -1,4 +1,4 @@
-import { api, h, icon, bytes, rate, duration, date, fileBadge, statusText, contextMenu, applyAppearance, playSound, toast, confirmDialog, promptDialog, resizableColumns } from './common.js';
+import { api, h, icon, bytes, rate, duration, date, fileBadge, statusText, isRunning, contextMenu, applyAppearance, playSound, toast, confirmDialog, promptDialog, resizableColumns } from './common.js';
 import * as D from './dialogs.js';
 
 const COLUMNS = {
@@ -191,6 +191,7 @@ export async function runCommand(cmd, arg) {
     case 'about': return D.aboutDialog();
     case 'tip': return D.tipDialog();
     case 'grabber': return api.invoke('win:open', 'grabber', {});
+    case 'linkgrabber': return api.invoke('win:open', 'linkgrabber', {});
     case 'copyUrl': return sel.length && api.invoke('clip:write', sel.map((x) => x.url).join('\n'));
     case 'refresh': {
       if (!sel[0]) return;
@@ -253,7 +254,7 @@ const TB = [
   ['startQueue', 'queuePlay', 'Start Qu…', 'Start the main queue, or pick a queue from the arrow'],
   ['stopQueue', 'queueStop', 'Stop Qu…', 'Stop the main queue, or pick a queue from the arrow'],
   '|',
-  ['grabber', 'globe', 'Grabber', 'Download files from a whole web site'],
+  ['linkgrabber', 'link', 'LinkGrabber', 'Collect, check and sort links before downloading them, or pick the site grabber from the arrow'],
   ['batch', 'layers', 'Batch', 'Add a batch of addresses using a wildcard'],
 ];
 
@@ -263,12 +264,15 @@ function renderToolbar() {
     if (b === '|') return h('div', { class: 'tb-sep' });
     const [cmd, ic, label, tip] = b;
     const btn = h('button', { class: 'tb-btn', 'data-cmd': cmd, title: tip, onclick: () => (cmd === 'startQueue' ? api.invoke('q:start', 'main') : cmd === 'stopQueue' ? api.invoke('q:stop', 'main') : runCommand(cmd)) }, icon(ic), h('span', { class: 'lbl' }, label));
-    if (cmd === 'startQueue' || cmd === 'stopQueue') {
+    if (cmd === 'startQueue' || cmd === 'stopQueue' || cmd === 'linkgrabber') {
+      const grab = cmd === 'linkgrabber';
       const drop = h('button', {
-        class: 'tb-btn tb-drop', title: 'Choose a queue', 'aria-label': 'Choose a queue',
+        class: 'tb-btn tb-drop', title: grab ? 'Choose a grabber' : 'Choose a queue', 'aria-label': grab ? 'Choose a grabber' : 'Choose a queue',
         onclick: (e) => {
           const r = e.currentTarget.getBoundingClientRect();
-          contextMenu(r.left, r.bottom + 2, S.queues.map((q) => ({ label: q.name, checked: q.running, onClick: () => api.invoke(cmd === 'startQueue' ? 'q:start' : 'q:stop', q.id) })));
+          contextMenu(r.left, r.bottom + 2, grab
+            ? [{ label: 'LinkGrabber — check and sort links', onClick: () => runCommand('linkgrabber') }, { label: 'Site grabber — download files from a web site', onClick: () => runCommand('grabber') }]
+            : S.queues.map((q) => ({ label: q.name, checked: q.running, onClick: () => api.invoke(cmd === 'startQueue' ? 'q:start' : 'q:stop', q.id) })));
         },
       }, icon('chevDown'));
       return h('div', { class: 'tb-split' }, btn, drop);
@@ -284,10 +288,10 @@ function updateToolbar() {
     const b = toolbarEl.querySelector(`[data-cmd="${cmd}"]`);
     if (b) b.disabled = !on;
   };
-  set('resume', sel.some((x) => x.status !== 'complete' && x.status !== 'downloading'));
-  set('stop', sel.some((x) => x.status === 'downloading'));
+  set('resume', sel.some((x) => x.status !== 'complete' && !isRunning(x)));
+  set('stop', sel.some(isRunning));
   set('delete', sel.length > 0);
-  set('stopAll', [...S.items.values()].some((x) => x.status === 'downloading') || S.queues.some((q) => q.running));
+  set('stopAll', [...S.items.values()].some(isRunning) || S.queues.some((q) => q.running));
   set('deleteCompleted', [...S.items.values()].some((x) => x.status === 'complete'));
 }
 
@@ -662,15 +666,15 @@ function onKey(e) {
   } else if (e.key === ' ' && S.focus) {
     e.preventDefault();
     const it = S.items.get(S.focus);
-    runCommand(it.status === 'downloading' ? 'stop' : 'resume');
+    runCommand(isRunning(it) ? 'stop' : 'resume');
   }
 }
 
 function rowMenu(x, y) {
   const sel = selected();
   const one = sel.length === 1 ? sel[0] : null;
-  const anyRunning = sel.some((s) => s.status === 'downloading');
-  const anyResumable = sel.some((s) => s.status !== 'complete' && s.status !== 'downloading');
+  const anyRunning = sel.some(isRunning);
+  const anyResumable = sel.some((s) => s.status !== 'complete' && !isRunning(s));
   const done = one && one.status === 'complete';
   const queueSub = (verb) => S.queues.map((q) => ({
     label: q.name,

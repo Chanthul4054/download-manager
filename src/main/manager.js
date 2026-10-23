@@ -9,8 +9,9 @@ const { MuxedDownload, muxedStats } = require('./engine/muxed-download');
 const { YtDlpDownload, isVideoPage } = require('./engine/ytdlp');
 const { RateLimiter } = require('./engine/limiter');
 const u = require('./util');
+const { diag, redactUrl } = require('./diag');
 
-const ACTIVE = new Set(['downloading', 'connecting']);
+const ACTIVE = new Set(['downloading', 'connecting', 'waiting']);
 
 /**
  * Owns the download list and running engines. Emits:
@@ -22,6 +23,7 @@ class DownloadManager extends EventEmitter {
     this.store = store;
     this.net = net;
     this.engines = new Map();
+    this.waiting = []; // ids started while every slot was busy, in order
     this.globalLimiter = new RateLimiter(0);
     this.quotaLog = []; // [minuteStamp, bytes]
     this.quotaPaused = new Set();
@@ -253,7 +255,18 @@ class DownloadManager extends EventEmitter {
   // ---- lifecycle -------------------------------------------------------------------------------
 
   isActive(id) {
-    return this.engines.has(id);
+    return this.engines.has(id) || this.waiting.includes(id);
+  }
+
+  // downloads.maxSimultaneous caps running downloads across the app; 0 means no limit.
+  hasFreeSlot() {
+    const max = Number(this.settings.downloads.maxSimultaneous) || 0;
+    return max <= 0 || this.engines.size < max;
+  }
+
+  // Starts waiting downloads while slots are free.
+  admit() {
+    while (this.waiting.length && this.hasFreeSlot()) this.start(this.waiting.shift());
   }
 
   activeCount() {
@@ -265,6 +278,15 @@ class DownloadManager extends EventEmitter {
     if (!item || this.engines.has(id)) return false;
     if (item.status === 'complete') return false;
     this.quotaPaused.delete(id);
+    if (!this.hasFreeSlot()) {
+      if (!this.waiting.includes(id)) this.waiting.push(id);
+      item.status = 'waiting';
+      item.statusText = 'Waiting for a free slot';
+      item.error = null;
+      this.touch(item);
+      return true;
+    }
+    this.waiting = this.waiting.filter((x) => x !== id);
     const ctx = {
       net: this.net,
       getSettings: () => this.settings,
@@ -305,6 +327,11 @@ class DownloadManager extends EventEmitter {
       this.emit('progress', id, st, this.publicItem(item));
     });
     eng.on('persist', () => this.persist());
+    eng.on('metrics', (m) => {
+      // Kept on the item (last run only) and written to the diagnostic log when enabled.
+      item.lastRun = m;
+      diag('download', { id, url: redactUrl(item.url), kind: item.kind, ...m });
+    });
     eng.on('complete', () => this.finalize(item));
     eng.on('stopped', () => {
       this.engines.delete(id);
@@ -314,6 +341,7 @@ class DownloadManager extends EventEmitter {
       item.pendingStatus = null;
       this.touch(item);
       this.emit('stopped', item.id);
+      this.admit();
     });
     eng.on('failed', (err) => {
       this.engines.delete(id);
@@ -323,6 +351,7 @@ class DownloadManager extends EventEmitter {
       item.statusText = item.error;
       this.touch(item);
       this.emit('failed', this.publicItem(item), err);
+      this.admit();
     });
     eng.start();
     return true;
@@ -359,11 +388,20 @@ class DownloadManager extends EventEmitter {
       this.touch(item);
       this.emit('failed', this.publicItem(item), e);
     }
+    this.admit();
   }
 
   stop(id, statusText) {
     const eng = this.engines.get(id);
     const item = this.get(id);
+    if (!eng && this.waiting.includes(id)) {
+      this.waiting = this.waiting.filter((x) => x !== id);
+      item.status = 'paused';
+      item.statusText = statusText || '';
+      this.touch(item);
+      this.emit('stopped', id);
+      return true;
+    }
     if (eng) {
       if (statusText) item.pendingStatus = statusText;
       eng.stop();
@@ -372,6 +410,7 @@ class DownloadManager extends EventEmitter {
   }
 
   stopAll() {
+    for (const id of [...this.waiting]) this.stop(id);
     for (const id of [...this.engines.keys()]) this.stop(id);
   }
 
@@ -395,7 +434,7 @@ class DownloadManager extends EventEmitter {
     for (const id of ids) {
       const item = this.get(id);
       if (!item) continue;
-      if (this.engines.has(id)) {
+      if (this.isActive(id)) {
         this.stop(id);
         await this.waitStopped(id);
       }
