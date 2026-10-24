@@ -14,9 +14,10 @@ use serde_json::{json, Map, Value};
 use std::sync::LazyLock;
 use tokio::task::JoinHandle;
 
+use crate::captcha;
 use crate::emitter::Emitter;
 use crate::engine::net::{NetContext, ReqOpts};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::grabber::extract_links;
 use crate::item::Auth;
 use crate::js::{self, de_bool, de_f64, de_opt_bool, de_opt_f64, de_opt_string, de_string, now_ms};
@@ -555,8 +556,47 @@ impl LinkGrabber {
         if !link.cookies.is_empty() {
             o = o.header("Cookie", &link.cookies);
         }
-        let f = self.net.fetch_buffer(page_url, &o).await?;
-        let files: Vec<_> = extract_links(&String::from_utf8_lossy(&f.body), page_url)
+        let mut f = self.net.fetch_buffer(page_url, &o).await?;
+        let mut html = String::from_utf8_lossy(&f.body).into_owned();
+        let mut cookies = link.cookies.clone();
+        // A captcha guards the real page: solve it and look inside the page it leads to.
+        if let Some(c) = captcha::detect(&html) {
+            let key = js::str_of(js::get(&self.settings(), "captchaApiKey")).trim().to_string();
+            if key.is_empty() {
+                return Err(Error::new(format!("{} — add a 2Captcha API key in the LinkGrabber settings", c.label())));
+            }
+            self.with_link(id, |l| {
+                l.status = "checking".into();
+                l.error = format!("Solving {}…", c.label());
+            });
+            self.touch();
+            let token = captcha::solve(&self.net, &key, &c, page_url).await?;
+            let form = captcha::answer_form(&html, page_url, &c, &token);
+            let body = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(&form.fields).finish();
+            cookies = captcha::merge_cookies(&cookies, f.headers.get("set-cookie").map(|s| s.as_str()));
+            let mut so = ReqOpts { auth: link.auth.clone(), max_bytes: Some(4 * 1024 * 1024), timeout_sec: Some(30.0), ..Default::default() }.header("Referer", page_url);
+            if !cookies.is_empty() {
+                so = so.header("Cookie", &cookies);
+            }
+            let mut target = form.action.clone();
+            if form.method == "GET" {
+                let mut u = url::Url::parse(&form.action).map_err(|_| Error::new("Invalid form address"))?;
+                u.set_query(Some(&body));
+                target = u.to_string();
+            } else {
+                so.method = Some(reqwest::Method::POST);
+                so.body = Some(body.into_bytes());
+                so = so.header("Content-Type", "application/x-www-form-urlencoded");
+            }
+            f = self.net.fetch_buffer(&target, &so).await?;
+            cookies = captcha::merge_cookies(&cookies, f.headers.get("set-cookie").map(|s| s.as_str()));
+            html = String::from_utf8_lossy(&f.body).into_owned();
+            if captcha::detect(&html).is_some() {
+                return Err(Error::new(format!("{} was not accepted", c.label())));
+            }
+        }
+        let page_url = if f.url.is_empty() { page_url } else { f.url.as_str() };
+        let files: Vec<_> = extract_links(&html, page_url)
             .into_iter()
             .filter(|x| x.tag != "css" && !PAGE_EXT.contains(&u::ext_of(&url::Url::parse(&x.url).map(|p| p.path().to_string()).unwrap_or_default()).as_str()))
             .collect();
@@ -566,7 +606,7 @@ impl LinkGrabber {
         let hit = self.store.linkgrabber.borrow().packages.iter().find(|p| p.links.iter().any(|l| l.id == id)).map(|p| p.id.clone());
         let mut opts = json!({
             "links": files.iter().map(|f| json!({ "url": f.url, "text": f.text, "depth": 1 })).collect::<Vec<_>>(),
-            "referer": page_url, "cookies": link.cookies, "userAgent": link.user_agent, "auth": link.auth, "deep": false,
+            "referer": page_url, "cookies": cookies, "userAgent": link.user_agent, "auth": link.auth, "deep": false,
             "source": link.source,
         });
         if let Some(fp) = &link.forced_package {

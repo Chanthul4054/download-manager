@@ -2,6 +2,7 @@
 //! and main-thread window events. Everything else runs in the app core (`app.rs`).
 
 pub mod app;
+pub mod captcha;
 pub mod cli;
 pub mod defaults;
 pub mod diag;

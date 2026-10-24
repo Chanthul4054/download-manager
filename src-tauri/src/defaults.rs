@@ -131,6 +131,7 @@ pub fn default_settings() -> Value {
             "useForLinkLists": true,
             "clipboard": false,
             "deepAnalyse": false,
+            "captchaApiKey": "",
             "checkThreads": 4,
             "variousPackage": true,
             "packageFolders": true,

@@ -323,6 +323,8 @@ impl NetContext {
         let mut url = url_str.to_string();
         let creds = opts.auth.clone().or_else(|| self.login_for(&url));
         let mut tried_auth = false;
+        let mut method = opts.method.clone().unwrap_or(reqwest::Method::GET);
+        let mut body = opts.body.as_ref();
         let mut hop: i64 = 0;
         while hop <= max_redirects {
             if opts.signal.as_ref().is_some_and(|s| s.is_cancelled()) {
@@ -348,15 +350,14 @@ impl NetContext {
                 }
             }
             let client = self.client_for(&proxy, timeout)?;
-            let method = opts.method.clone().unwrap_or(reqwest::Method::GET);
-            let mut req = client.request(method, u.clone());
+            let mut req = client.request(method.clone(), u.clone());
             let mut hm = HeaderMap::new();
             for (k, v) in &h {
                 let name = HeaderName::from_bytes(k.as_bytes()).map_err(|_| Error::with_code(format!("Header name must be a valid HTTP token [\"{}\"]", k), "ERR_INVALID_HTTP_TOKEN"))?;
                 hm.insert(name, header_value(k, v)?);
             }
             req = req.headers(hm);
-            if let Some(b) = &opts.body {
+            if let Some(b) = body {
                 req = req.body(b.clone());
             }
             let send = req.send();
@@ -374,6 +375,11 @@ impl NetContext {
                 if let Some(loc) = headers.get("location").filter(|l| !l.is_empty()) {
                     let loc = latin1_url(loc);
                     url = u.join(&loc).map_err(|_| Error::with_code("Invalid URL", "ERR_INVALID_URL"))?.to_string();
+                    // Browsers follow a redirected form post with a plain GET.
+                    if status != 307 && status != 308 && method == reqwest::Method::POST {
+                        method = reqwest::Method::GET;
+                        body = None;
+                    }
                     hop += 1;
                     continue;
                 }
