@@ -28,7 +28,6 @@
     ],
     "resources": {
       "../extension/": "extension/",
-      "../assets/": "assets/",
       "../node_modules/ffmpeg-static/ffmpeg.exe": "ffmpeg/ffmpeg.exe"
     },
     "windows": {
