@@ -126,6 +126,8 @@ pub struct HttpDownload {
     metrics: RefCell<Metrics>,
     timers: RefCell<Vec<JoinHandle<()>>>,
     idle: Notify,
+    /// The file's own address when `item.url` is a hoster page (resolved at every start).
+    direct: RefCell<Option<String>>,
 }
 
 impl HttpDownload {
@@ -149,6 +151,7 @@ impl HttpDownload {
             metrics: RefCell::new(Metrics::default()),
             timers: RefCell::new(Vec::new()),
             idle: Notify::new(),
+            direct: RefCell::new(None),
         });
         *me.me.borrow_mut() = Rc::downgrade(&me);
         me
@@ -235,7 +238,23 @@ impl HttpDownload {
         }
     }
 
+    /// The address requests go to.
+    fn url(&self) -> String {
+        self.direct.borrow().clone().unwrap_or_else(|| self.item.borrow().url.clone())
+    }
+
     async fn run_inner(self: Rc<Self>) -> Result<()> {
+        let page = self.item.borrow().url.clone();
+        if crate::hosters::needs_resolve(&page) {
+            self.emit(EngineEvent::Status("Resolving download link...".into()));
+            let key = js::str_of(&self.ctx.store.s(&["linkGrabber", "captchaApiKey"]));
+            let direct = crate::hosters::resolve(&self.ctx.net, &page, key.trim()).await?;
+            if self.stopped.get() {
+                self.finish("stopped", None).await;
+                return Ok(());
+            }
+            *self.direct.borrow_mut() = Some(direct);
+        }
         let query = self.item.borrow().range_mode.as_deref() == Some("query");
         if query {
             // Size is known up front (e.g. googlevideo `clen`); every request is a bounded `&range=a-b` chunk.
@@ -508,7 +527,7 @@ impl HttpDownload {
                 (b.pos, b.end)
             };
             let chunk_end = end.min(pos + CHUNK);
-            let mut u = url::Url::parse(&self.item.borrow().url)?;
+            let mut u = url::Url::parse(&self.url())?;
             set_search_param(&mut u, "range", &format!("{}-{}", pos, chunk_end - 1));
             let attempt: Result<()> = async {
                 let mut res = self.request(u.as_str(), self.headers(), w).await?;
@@ -604,7 +623,7 @@ impl HttpDownload {
                     continue;
                 }
             }
-            let url = self.item.borrow().url.clone();
+            let url = self.url();
             let mut headers = self.headers();
             super::net::set_header(&mut headers, "Range", &format!("bytes={}-", from));
             let mut res = match self.request(&url, headers, w).await {
