@@ -147,7 +147,7 @@ pub fn default_settings() -> Value {
         "torrent": {
             "enableDht": true,
             "enableLsd": true,
-            "enableUtp": false,
+            "enableUtp": true,
             "enablePortForwarding": true,
             "enablePex": true,
             "encryption": "prefer",
