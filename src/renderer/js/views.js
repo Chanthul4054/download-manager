@@ -190,7 +190,7 @@ export async function mountNewDownload(root) {
   let seq = 0;
   const reprobe = async (force) => {
     const my = ++seq;
-    if (!/^(https?|ftp):\/\//i.test(d.url)) {
+    if (!/^((https?|ftp):\/\/|magnet:\?|file:\/\/\/\S+\.torrent$)/i.test(d.url)) {
       sizeEl.textContent = 'Enter a valid address';
       return;
     }
@@ -219,6 +219,7 @@ export async function mountNewDownload(root) {
     authBox.classList.toggle('hidden', !info.authRequired && !d.user);
     if (info.kind === 'hls') loadVariants();
     if (info.kind === 'ytdlp') loadYtdlp();
+    if (info.kind === 'torrent') loadTorrentFiles();
     if (p.qualities?.length && qualityRow.classList.contains('hidden')) {
       qualityRow.classList.remove('hidden');
       const pick = (i) => {
@@ -243,6 +244,48 @@ export async function mountNewDownload(root) {
     } catch { /* not a master playlist */ }
   };
 
+
+  // A torrent's files, each with a checkbox; only the checked ones are downloaded.
+  let torrentFor = null;
+  const loadTorrentFiles = async () => {
+    if (torrentFor === d.url) return;
+    torrentFor = d.url;
+    d.torrentFiles = null;
+    qualityRow.classList.remove('hidden');
+    qualityRow.replaceChildren(h('div', { class: 'hint', style: { paddingLeft: '138px' } }, 'Reading the torrent’s file list…'));
+    let t;
+    try {
+      t = await api.invoke('util:torrentFiles', d.url);
+    } catch (e) {
+      if (torrentFor === d.url) qualityRow.replaceChildren(h('div', { class: 'status-err', style: { paddingLeft: '138px' } }, e.message));
+      return;
+    }
+    if (torrentFor !== d.url) return;
+    if (!userEditedName && t.name) {
+      d.fileName = t.name;
+      nameInp.value = d.fileName;
+    }
+    const chosen = new Set(t.files.map((f) => f.index));
+    const paint = () => {
+      d.torrentFiles = chosen.size === t.files.length ? null : [...chosen];
+      const size = t.files.filter((f) => chosen.has(f.index)).reduce((a, f) => a + f.size, 0);
+      sizeEl.textContent = `Torrent · ${chosen.size} of ${t.files.length} files · ${bytes(size)}`;
+    };
+    const boxes = t.files.map((f) => h('label', { class: 'li' },
+      h('input', { type: 'checkbox', checked: true, onchange: (e) => { if (e.target.checked) chosen.add(f.index); else chosen.delete(f.index); paint(); } }),
+      h('span', { class: 'grow ellipsis', title: f.path }, f.path), h('span', { class: 'muted' }, bytes(f.size))));
+    const all = (on) => {
+      boxes.forEach((b, i) => {
+        b.firstChild.checked = on;
+        if (on) chosen.add(t.files[i].index); else chosen.delete(t.files[i].index);
+      });
+      paint();
+    };
+    qualityRow.replaceChildren(field('Files', h('div', { class: 'col', style: { gap: '4px' } },
+      h('div', { class: 'listbox', style: { maxHeight: '150px' } }, ...boxes),
+      h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: () => all(true) }, 'All'), h('button', { class: 'btn small', onclick: () => all(false) }, 'None')))));
+    paint();
+  };
 
   let ytLoaded = false;
   const loadYtdlp = async () => {
@@ -314,7 +357,8 @@ export async function mountNewDownload(root) {
 
   const queueSel = select(st.queues.filter((q) => q.type === 'download').map((q) => [q.id, q.name]), 'main', (v) => (d.queueId = v));
   const go = async (start) => {
-    if (!/^(https?|ftp):\/\//i.test(d.url)) return toast('Enter a valid address');
+    if (!/^((https?|ftp):\/\/|magnet:\?|file:\/\/\/\S+\.torrent$)/i.test(d.url)) return toast('Enter a valid address');
+    if (d.torrentFiles && !d.torrentFiles.length) return toast('Choose at least one file');
     try {
       await api.invoke('dl:add', {
         url: d.url, fileName: d.fileName || undefined, saveDir: d.saveDir, category: d.category, description: d.description,
@@ -323,6 +367,7 @@ export async function mountNewDownload(root) {
         hls: d.variant ? { variant: d.variant } : p.hls, start, queueId: start ? null : d.queueId,
         parts: d.parts || undefined, kind: d.parts ? 'muxed' : p.kind,
         ytdlp: d.ytdlpQuality ? { quality: d.ytdlpQuality } : undefined,
+        torrentFiles: d.torrentFiles || undefined,
       });
       close();
     } catch (e) {

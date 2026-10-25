@@ -23,17 +23,22 @@ export async function addUrlDialog(prefill) {
     pass.disabled = !v;
   });
   const err = h('div', { class: 'status-err hidden', role: 'alert' });
+  // A local .torrent file goes in as a file:/// address (drive letter kept, the rest encoded).
+  const openTorrent = h('button', { class: 'btn', onclick: async () => {
+    const f = await api.invoke('dialog:file', '', 'torrent');
+    if (f) inp.value = 'file:///' + f.replace(/\\/g, '/').split('/').map((x, i) => (i === 0 && /^[a-z]:$/i.test(x) ? x : encodeURIComponent(x))).join('/');
+  } }, 'Open .torrent file…');
   modal({
     title: 'Enter new address to download',
-    body: h('div', { class: 'col' }, field('Address', inp), auth, field('Login', user), field('Password', pass), err),
+    body: h('div', { class: 'col' }, field('Address', h('div', { class: 'row' }, inp, openTorrent)), auth, field('Login', user), field('Password', pass), err),
     buttons: [
       { label: 'Cancel' },
       {
         label: 'OK', primary: true,
         onClick: () => {
           const v = inp.value.trim();
-          if (!/^(https?|ftp):\/\/\S+$/i.test(v)) {
-            err.textContent = 'Enter a full address that starts with http://, https:// or ftp://';
+          if (!/^((https?|ftp):\/\/\S+|magnet:\?\S+|file:\/\/\/\S+\.torrent)$/i.test(v)) {
+            err.textContent = 'Enter a full address that starts with http://, https://, ftp:// or magnet:, or open a .torrent file';
             err.classList.remove('hidden');
             inp.focus();
             return false;
@@ -156,7 +161,7 @@ export function optionsDialog(initial = 'general') {
   let cats = clone(S.categories);
   let catsDirty = false;
 
-  const g = s.general, ft = s.fileTypes, c = s.connection, dl = s.downloads, px = s.proxy, st = s.saveTo, vp = s.videoPanel, snd = s.sounds, ap = s.appearance;
+  const g = s.general, ft = s.fileTypes, c = s.connection, dl = s.downloads, px = s.proxy, st = s.saveTo, vp = s.videoPanel, snd = s.sounds, ap = s.appearance, bt = s.torrent;
   const num = (obj, k, attrs = {}) => h('input', { type: 'number', value: obj[k], ...attrs, oninput: (e) => (obj[k] = Number(e.target.value)) });
   const txt = (obj, k, attrs = {}) => h('input', { type: 'text', value: obj[k] ?? '', class: 'grow', ...attrs, oninput: (e) => (obj[k] = e.target.value) });
   const area = (obj, k, rows = 3) => h('textarea', { rows, class: 'grow', oninput: (e) => (obj[k] = e.target.value) }, obj[k] || '');
@@ -283,6 +288,29 @@ export function optionsDialog(initial = 'general') {
           h('div', { class: 'row' }, txt(vp, 'ytdlpPath', { placeholder: 'Installed by OpenDM / found on PATH' }), btn),
           status), 'Downloads video pages such as YouTube. Keep it updated when a site stops working.');
       })())],
+    torrent: ['BitTorrent', 'down', () => h('div', { class: 'col' },
+      h('div', { class: 'hint' }, 'Used for magnet links and .torrent addresses. Changes apply the next time OpenDM starts.'),
+      h('fieldset', {}, h('legend', {}, 'Network'), h('div', { class: 'col' },
+        check('Find peers with DHT', bt.enableDht, (v) => (bt.enableDht = v)),
+        check('Find peers on the local network (LSD)', bt.enableLsd, (v) => (bt.enableLsd = v)),
+        check('Find peers through other peers (PEX)', bt.enablePex, (v) => (bt.enablePex = v)),
+        check('Use uTP as well as TCP', bt.enableUtp, (v) => (bt.enableUtp = v)),
+        check('Forward the listening port on the router (UPnP)', bt.enablePortForwarding, (v) => (bt.enablePortForwarding = v)),
+        field('Encryption', select([['prefer', 'Prefer encrypted connections'], ['require', 'Require encryption'], ['disable', 'Never encrypt']], bt.encryption, (v) => (bt.encryption = v)), 'Encryption hides BitTorrent traffic from ISP throttling. Requiring it finds fewer peers.'),
+        field('Listening port', h('div', { class: 'row' }, num(bt, 'listenPort', { min: 0, max: 65535 }), h('span', { class: 'hint' }, '0 = pick a free port'))),
+        (() => {
+          const said = { allowed: 'Allowed: peers can connect to you.', blocked: 'Blocked: peers cannot connect to you, which makes torrents slower.', none: 'Not allowed yet: Windows may ask the first time a torrent starts.' };
+          const status = h('span', { class: 'hint' }, 'Checking…');
+          const show = (s) => { status.textContent = said[s] || ''; row.hidden = s === 'unsupported'; };
+          const btn = h('button', { class: 'btn', onclick: async () => { btn.disabled = true; status.textContent = 'Waiting for Windows to confirm…'; try { show(await api.invoke('util:torrentFirewall', 'allow')); } catch (e) { toast(e.message); show(await api.invoke('util:torrentFirewall')); } btn.disabled = false; } }, 'Allow incoming peers');
+          const row = field('Windows Firewall', h('div', { class: 'row' }, btn, status), 'Needs administrator rights once. Incoming connections give torrents more peers.');
+          api.invoke('util:torrentFirewall').then(show, () => show('unsupported'));
+          return row;
+        })())),
+      h('fieldset', {}, h('legend', {}, 'Seeding'),
+        field('Keep sharing until uploaded', h('div', { class: 'row' }, num(bt, 'seedRatio', { min: 0, step: 0.1 }), h('span', { class: 'hint' }, '× the size. 0 = stop when the download is complete.')))),
+      h('label', {}, 'Extra trackers added to every torrent (one per line):'), area(bt, 'trackers', 4),
+      field('Also load trackers from', txt(bt, 'trackersUrl', { placeholder: 'https://… a list with one tracker per line' }), 'Read when OpenDM starts. Not used for private torrents.'))],
     sounds: ['Sounds', 'info', () => h('div', { class: 'col' },
       check('Play a sound when a download completes', snd.complete, (v) => (snd.complete = v)),
       check('Play a sound when a download fails', snd.failed, (v) => (snd.failed = v)),

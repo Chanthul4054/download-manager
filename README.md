@@ -1,7 +1,8 @@
 # OpenDM
 
-A multi-connection download manager for Windows, macOS and Linux, built with Electron and plain
-Node.js. It comes with a Chrome/Edge extension that hands browser downloads and web videos to the app.
+A multi-connection download manager for Windows, built in Rust with [Tauri](https://tauri.app/)
+and a plain HTML/JavaScript interface. It comes with a Chrome/Edge extension that hands browser
+downloads and web videos to the app.
 
 ## Features
 
@@ -34,7 +35,9 @@ Node.js. It comes with a Chrome/Edge extension that hands browser downloads and 
 3. Pick an install folder (or keep the default) and click **Install**. No administrator rights are
    needed. OpenDM starts when setup finishes, and gets Start-menu and desktop shortcuts.
 
-FFmpeg is included. yt-dlp, used for YouTube, is downloaded the first time you need it.
+FFmpeg is included. yt-dlp, used for YouTube, is downloaded the first time you need it. yt-dlp
+needs a JavaScript runtime to read YouTube pages: if [Node.js](https://nodejs.org/) is on your
+`PATH` OpenDM points yt-dlp at it, otherwise yt-dlp uses [Deno](https://deno.com/) if installed.
 
 ### Add the browser extension (Chrome / Edge)
 
@@ -56,17 +59,21 @@ are kept in `%APPDATA%\OpenDM`; delete that folder too if you want to remove the
 
 ## Requirements (running from source)
 
-- [Node.js](https://nodejs.org/) 18 or newer
-- Optional: [FFmpeg](https://ffmpeg.org/), used to merge video and audio. It is installed with the
-  optional `ffmpeg-static` package, or OpenDM finds it on your `PATH`. You can also set its path
-  in **Options → Video panel**.
+- [Rust](https://rustup.rs/) (stable). On Windows, also the
+  [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the
+  "Desktop development with C++" workload.
+- WebView2, which Windows 10 and 11 already have.
+- [Node.js](https://nodejs.org/) 18 or newer, for the Tauri command-line tool and the bundled FFmpeg
+  (the optional `ffmpeg-static` package). The app itself does not use Node.
+- Optional: [FFmpeg](https://ffmpeg.org/) on your `PATH` instead, or set its path in
+  **Options → Video panel**. It is used to merge video and audio.
 - Optional: yt-dlp. OpenDM downloads it the first time you need it.
 
 ## Getting started
 
 ```sh
 npm install
-npm start
+npm start          # tauri dev: builds the Rust app and opens it
 ```
 
 ### Browser extension when running from source
@@ -103,9 +110,11 @@ different folder, for example for portable use or testing.
 ## Development
 
 ```sh
-npm test                     # run the test suite against a local test server
-node scripts/make-icons.js   # regenerate the icons
+npm test                                          # cargo test: unit tests and local-server integration tests
+cargo run --manifest-path src-tauri/Cargo.toml --example make_icons   # regenerate the icons
 ```
+
+Benchmarks are described in [bench/README.md](bench/README.md).
 
 ### Building the installer
 
@@ -114,34 +123,35 @@ npm install
 npm run dist
 ```
 
-This uses [electron-builder](https://www.electron.build/) to create
-`dist/OpenDM-Setup-<version>.exe` (an NSIS installer for 64-bit Windows). The browser extension is
-copied into the install folder, and FFmpeg is unpacked next to the app so it can run.
+This uses the Tauri bundler to build an NSIS installer for 64-bit Windows and copies it to
+`dist/OpenDM-Setup-<version>.exe`. The browser extension and FFmpeg are installed next to the app.
 
 To publish a new version:
 
-1. Bump `version` in `package.json`.
+1. Bump `version` in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`.
 2. Run `npm run dist`.
 3. Create a GitHub release for the new tag and attach the `.exe`:
    `gh release create v<version> dist/OpenDM-Setup-<version>.exe --title "OpenDM <version>"`.
 
 The installer is unsigned, so Windows SmartScreen warns on first run. Signing needs a
-code-signing certificate configured for electron-builder (`win.certificateFile` /
-`CSC_LINK`).
+code-signing certificate configured in `src-tauri/tauri.conf.json`
+(`bundle.windows.certificateThumbprint` or `bundle.windows.signCommand`).
 
 ### Project structure
 
 ```text
-src/main/          Electron main process
-  engine/          networking and proxies, HTTP/FTP/HLS/video downloads, speed limiter
-  manager.js       download list, categories, quotas
-  queues.js        queues and scheduler
-  grabber.js       site grabber
-  integration.js   local server for the browser extension
-src/renderer/      user interface (no framework)
-extension/         Chrome/Edge extension (Manifest V3)
-scripts/           helper scripts
-test/              tests (node:test)
+src-tauri/           the app (Rust)
+  src/app.rs         windows, menu, tray, command line, and every IPC channel the UI uses
+  src/engine/        networking and proxies, HTTP/FTP/HLS/video downloads, speed limiter
+  src/manager.rs     download list, categories, quotas
+  src/queues.rs      queues and scheduler
+  src/grabber.rs     site grabber
+  src/linkgrabber.rs LinkGrabber
+  src/integration.rs local server for the browser extension
+  tests/             integration tests against a local test server
+  examples/          benchmark, bench server and icon generator
+src/renderer/        user interface (no framework); js/bridge.js connects it to the app
+extension/           Chrome/Edge extension (Manifest V3)
 ```
 
 ### Security
@@ -152,4 +162,5 @@ OpenDM never approves the preflight.
 
 ## License
 
-MIT. The optional `ffmpeg-static` package is licensed separately under GPL-3.0.
+MIT. The bundled FFmpeg (from the optional `ffmpeg-static` package) is licensed separately under
+GPL-3.0.

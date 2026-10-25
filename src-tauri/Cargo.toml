@@ -1,0 +1,68 @@
+[package]
+name = "opendm"
+version = "1.1.0"
+description = "A multi-connection download manager with browser integration, queues, scheduler, site grabber and video capture."
+authors = ["OpenDM contributors"]
+license = "MIT"
+repository = "https://github.com/Chanthul4054/download-manager"
+edition = "2021"
+
+[lib]
+name = "opendm_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+drag = "2"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "fs", "io-util", "process", "sync", "net"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
+suppaftp = { version = "12", default-features = false, features = ["tokio"] }
+arboard = "3"
+tiny_http = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+flate2 = "1"
+librqbit = { version = "9", default-features = false, features = ["rust-tls"] }
+anyhow = "1"
+regex = "1"
+url = "2"
+percent-encoding = "2"
+rand = "0.8"
+chrono = "0.4"
+base64 = "0.22"
+hex = "0.4"
+bytes = "1"
+dirs = "6"
+which = "7"
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
+windows = { version = "0.61", features = ["Win32_Networking_WinHttp", "Win32_Foundation", "Win32_System_Memory", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_ProcessStatus"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time", "fs", "io-util", "process", "sync", "net", "rt-multi-thread"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
+
+[patch.crates-io]
+# librqbit with peer encryption (MSE/PE) and a PEX switch added; see vendor/librqbit/src/mse.rs.
+librqbit = { path = "vendor/librqbit" }
