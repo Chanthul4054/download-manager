@@ -1883,7 +1883,7 @@ impl App {
             "util:ffmpeg" => json!(find_ffmpeg(&js::str_of(&self.settings()["videoPanel"]["ffmpegPath"]))),
             "util:ytdlp" => json!(ytdlp::find_ytdlp(&js::str_of(&self.settings()["videoPanel"]["ytdlpPath"]), &self.bin_dir())),
             "util:ytdlpInstall" => json!(ytdlp::install_ytdlp(&self.net, &self.bin_dir()).await?),
-            "util:torrentFiles" => crate::engine::torrent::list_files(&self.store, &js::str_of(&a(0))).await?,
+            "util:torrentFiles" => crate::engine::torrent::list_files(&self.store, &self.net, &js::str_of(&a(0))).await?,
             "util:ytdlpInfo" => {
                 let s = self.settings();
                 match ytdlp::find_ytdlp(&js::str_of(&s["videoPanel"]["ytdlpPath"]), &self.bin_dir()) {

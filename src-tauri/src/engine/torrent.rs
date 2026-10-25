@@ -18,6 +18,7 @@ use librqbit::{dht::DhtPersistenceConfig, AddTorrent, AddTorrentOptions, AddTorr
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
+use super::net::{NetContext, ReqOpts};
 use super::{Ctx, Engine, EngineEvent, Meta, Sink};
 use crate::error::{Error, Result};
 use crate::item::ItemRef;
@@ -49,8 +50,8 @@ fn source(url: &str) -> Result<AddTorrent<'static>> {
 
 /// The torrent's name and files (index, path, size), read without starting it. A magnet link
 /// has to fetch this from peers first.
-pub async fn list_files(store: &Store, url: &str) -> Result<Value> {
-    let sess = session(store).await?;
+pub async fn list_files(store: &Store, net: &NetContext, url: &str) -> Result<Value> {
+    let sess = session(store, net).await?;
     let src = source(url)?;
     on_rt(async move {
         let add = sess.add_torrent(src, Some(AddTorrentOptions { list_only: true, ..Default::default() }));
@@ -89,7 +90,7 @@ async fn on_rt<T: Send + 'static>(f: impl std::future::Future<Output = T> + Send
     RT.spawn(f).await.map_err(err)
 }
 
-async fn session(store: &Store) -> Result<Arc<Session>> {
+async fn session(store: &Store, net: &NetContext) -> Result<Arc<Session>> {
     let s = store.s(&["torrent"]);
     let on = |k: &str| js::truthy(js::get(&s, k));
     let (dht, lsd, utp, upnp) = (on("enableDht"), on("enableLsd"), on("enableUtp"), on("enablePortForwarding"));
@@ -100,7 +101,19 @@ async fn session(store: &Store) -> Result<Arc<Session>> {
         _ => EncryptionPolicy::Prefer,
     };
     let port = js::num_or(js::get(&s, "listenPort"), 0.0).clamp(0.0, 65535.0) as u16;
-    let trackers: std::collections::HashSet<url::Url> = js::str_of(js::get(&s, "trackers")).lines().filter_map(|l| url::Url::parse(l.trim()).ok()).collect();
+    let mut lines = js::str_of(js::get(&s, "trackers"));
+    let list_url = js::str_of(js::get(&s, "trackersUrl"));
+    if SESSION.get().is_none() && !list_url.trim().is_empty() {
+        // shortcut: the list is fetched once, when the session starts; restart to refresh it.
+        // A list that fails to load only means fewer trackers.
+        if let Ok(f) = net.fetch_buffer(list_url.trim(), &ReqOpts { timeout_sec: Some(15.0), ..Default::default() }).await {
+            if f.status < 400 {
+                lines.push('\n');
+                lines.push_str(&String::from_utf8_lossy(&f.body));
+            }
+        }
+    }
+    let trackers = parse_trackers(&lines);
     let dir = store.dir.join("torrents");
     let dht_file = store.dir.join("dht.json");
     SESSION
@@ -128,6 +141,12 @@ async fn session(store: &Store) -> Result<Arc<Session>> {
         })
         .await
         .cloned()
+}
+
+/// Tracker URLs, one per line; anything that is not an http(s)/udp tracker (a downloaded list is
+/// untrusted) is skipped.
+fn parse_trackers(lines: &str) -> std::collections::HashSet<url::Url> {
+    lines.lines().filter_map(|l| url::Url::parse(l.trim()).ok()).filter(|u| matches!(u.scheme(), "http" | "https" | "udp") && u.host().is_some()).collect()
 }
 
 /// Drops a torrent (by the info hash its download recorded) from the session, so it stops
@@ -165,7 +184,7 @@ impl TorrentDownload {
 
     async fn download(self: Rc<Self>) -> Result<()> {
         self.emit(EngineEvent::Status("Getting torrent info...".into()));
-        let sess = session(&self.ctx.store).await?;
+        let sess = session(&self.ctx.store, &self.ctx.net).await?;
         let (url, out, kb, only) = {
             let it = self.item.borrow();
             let only: Option<Vec<usize>> = it.extra.get("onlyFiles").and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -289,6 +308,14 @@ impl Engine for TorrentDownload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tracker_lists_keep_only_tracker_urls() {
+        let t = parse_trackers("udp://tracker.example:1337/announce\n\n  https://t.example/announce \njavascript:alert(1)\nfile:///etc/passwd\nnot a url");
+        let mut got: Vec<_> = t.iter().map(|u| u.as_str()).collect();
+        got.sort();
+        assert_eq!(got, ["https://t.example/announce", "udp://tracker.example:1337/announce"]);
+    }
 
     #[test]
     fn recognises_torrent_addresses() {

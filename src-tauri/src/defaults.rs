@@ -153,6 +153,7 @@ pub fn default_settings() -> Value {
             "encryption": "prefer",
             "listenPort": 0,
             "trackers": "",
+            "trackersUrl": "",
             "seedRatio": 1,
         },
         "lastSaveDirs": {},

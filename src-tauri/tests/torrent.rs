@@ -19,7 +19,7 @@ fn downloads_from_the_swarm_then_stops_and_cleans_up() {
         let local = env.dir.join("my file #1.torrent");
         std::fs::write(&local, &f.body).unwrap();
         let file_url = url::Url::from_file_path(&local).unwrap().to_string();
-        let list = opendm_lib::engine::torrent::list_files(&env.store, &file_url).await.unwrap();
+        let list = opendm_lib::engine::torrent::list_files(&env.store, &env.net, &file_url).await.unwrap();
         let files = list["files"].as_array().unwrap();
         assert_eq!(files.len(), 1, "{list}");
         assert!(files[0]["path"].as_str().unwrap().ends_with(".iso") && files[0]["size"].as_u64().unwrap() > 1 << 30);
