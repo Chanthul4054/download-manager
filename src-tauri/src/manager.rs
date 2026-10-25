@@ -18,6 +18,7 @@ use crate::engine::http_download::HttpDownload;
 use crate::engine::limiter::{LimiterRef, RateLimiter};
 use crate::engine::muxed_download::{muxed_stats, MuxedDownload};
 use crate::engine::net::{NetContext, ReqOpts};
+use crate::engine::torrent::{self, TorrentDownload};
 use crate::engine::ytdlp::{is_video_page, YtDlpDownload};
 use crate::engine::{interval, Ctx, Engine, EngineEvent, Sink};
 use crate::error::{Error, Result};
@@ -297,6 +298,7 @@ impl DownloadManager {
         let mut name = given
             .filter(|g| !g.is_empty())
             .map(|g| g.to_string())
+            .or_else(|| torrent::magnet_name(url))
             .or_else(|| u::file_name_from_url(url).filter(|n| !n.is_empty()))
             .unwrap_or_else(|| "download".into());
         if M3U8_END.is_match(&name) {
@@ -387,7 +389,7 @@ impl DownloadManager {
     pub fn add(&self, opts: &Value) -> Result<Value> {
         let url = js::str_of(js::get(opts, "url")).trim().to_string();
         match url::Url::parse(&url) {
-            Ok(p) if ["http", "https", "ftp"].contains(&p.scheme()) => {}
+            Ok(p) if ["http", "https", "ftp", "magnet"].contains(&p.scheme()) || torrent::is_torrent(&url) => {}
             _ => return Err(Error::new(format!("Invalid address: {}", url))),
         }
         let dup = self.find_duplicate(&url);
@@ -524,6 +526,11 @@ impl DownloadManager {
             }
             self.store.save("settings");
         }
+        let mut item = item;
+        // The files of a torrent to download (indices), when the user chose some.
+        if let Some(files) = js::get(opts, "torrentFiles").as_array().filter(|f| !f.is_empty()) {
+            item.extra.insert("onlyFiles".into(), json!(files));
+        }
         let item = Rc::new(RefCell::new(item));
         self.store.downloads.borrow_mut().push(item.clone());
         let qid = js::str_of(js::get(opts, "queueId"));
@@ -611,6 +618,7 @@ impl DownloadManager {
             "hls" => HlsDownload::new(item.clone(), ctx, sink),
             "muxed" => MuxedDownload::new(item.clone(), ctx, sink),
             "ytdlp" => YtDlpDownload::new(item.clone(), ctx, sink),
+            "torrent" => TorrentDownload::new(item.clone(), ctx, sink),
             _ => HttpDownload::new(item.clone(), ctx, sink),
         };
         self.engines.borrow_mut().push((id.to_string(), eng.clone()));
@@ -734,14 +742,18 @@ impl DownloadManager {
                 (it.save_dir.clone(), it.file_name.clone(), it.overwrite, it.temp_path.clone())
             };
             let mut dest = join(&save_dir, &file_name);
-            let exists = tokio::fs::metadata(&dest).await.is_ok();
+            // A torrent is written in place (and may keep seeding from there): nothing to move.
+            let in_place = item.borrow().kind.as_deref() == Some("torrent");
+            let exists = !in_place && tokio::fs::metadata(&dest).await.is_ok();
             if exists && !overwrite && existing != "overwrite" {
                 dest = u::unique_path(&dest, &HashSet::new()).await;
             }
             if exists && (overwrite || existing == "overwrite") {
                 u::rm_force(&dest, false).await;
             }
-            u::move_file(&temp, &dest).await?;
+            if !in_place {
+                u::move_file(&temp, &dest).await?;
+            }
             let extra = item.borrow().extra_files.clone().unwrap_or_default();
             for x in extra {
                 let target = u::unique_path(&join(&save_dir, &u::sanitize_file_name(&x.name)), &HashSet::new()).await;
@@ -863,6 +875,10 @@ impl DownloadManager {
                 }
             }
             u::rm_force(&format!("{}.ytdlp", temp), true).await;
+            let hash = item.borrow().extra.get("infoHash").and_then(|v| v.as_str()).map(String::from);
+            if let Some(hash) = hash {
+                torrent::forget(&hash, delete_files).await;
+            }
             if delete_files {
                 if let Some(s) = saved {
                     u::rm_force(&s, false).await;
@@ -1091,6 +1107,9 @@ pub fn kind_for(url: &str, explicit: Option<&str>) -> String {
     }
     if M3U8_URL.is_match(url) {
         return "hls".into();
+    }
+    if torrent::is_torrent(url) {
+        return "torrent".into();
     }
     "http".into()
 }

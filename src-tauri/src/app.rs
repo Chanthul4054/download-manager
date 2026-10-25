@@ -53,7 +53,7 @@ const INVOKE: &[&str] = &[
     "cats:save", "cats:reset", "settings:save", "settings:replaceList", "settings:reset",
     "dialog:folder", "dialog:file", "dialog:confirm",
     "win:open", "win:close", "win:resize", "win:setTitle", "win:showMain", "win:toggleDrop",
-    "clip:urls", "clip:write", "util:batch", "util:openExternal", "util:openPath", "util:probe", "util:hlsVariants", "util:ffmpeg", "util:extensionDir", "util:ytdlp", "util:ytdlpInstall", "util:ytdlpInfo",
+    "clip:urls", "clip:write", "util:batch", "util:openExternal", "util:openPath", "util:probe", "util:hlsVariants", "util:ffmpeg", "util:extensionDir", "util:ytdlp", "util:ytdlpInstall", "util:ytdlpInfo", "util:torrentFiles",
     "import", "export", "batch:clipboard", "power:run", "power:cancel", "app:quit",
     "grabber:list", "grabber:get", "grabber:new", "grabber:save", "grabber:delete", "grabber:run", "grabber:stop",
     "grabber:setChecked", "grabber:addToList", "grabber:open",
@@ -1776,6 +1776,9 @@ impl App {
                 let send = move |p: Option<tauri_plugin_dialog::FilePath>| {
                     let _ = tx.send(p);
                 };
+                if js::s(&a(1)) == "torrent" {
+                    d = d.add_filter("Torrent files", &["torrent"]);
+                }
                 if channel == "dialog:folder" {
                     d.pick_folder(send);
                 } else {
@@ -1880,6 +1883,7 @@ impl App {
             "util:ffmpeg" => json!(find_ffmpeg(&js::str_of(&self.settings()["videoPanel"]["ffmpegPath"]))),
             "util:ytdlp" => json!(ytdlp::find_ytdlp(&js::str_of(&self.settings()["videoPanel"]["ytdlpPath"]), &self.bin_dir())),
             "util:ytdlpInstall" => json!(ytdlp::install_ytdlp(&self.net, &self.bin_dir()).await?),
+            "util:torrentFiles" => crate::engine::torrent::list_files(&self.store, &js::str_of(&a(0))).await?,
             "util:ytdlpInfo" => {
                 let s = self.settings();
                 match ytdlp::find_ytdlp(&js::str_of(&s["videoPanel"]["ytdlpPath"]), &self.bin_dir()) {

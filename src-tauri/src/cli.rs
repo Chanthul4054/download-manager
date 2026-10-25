@@ -21,7 +21,7 @@ pub struct Args {
 }
 
 static SWITCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:/|-{1,2})([a-z]+)$").unwrap());
-static BARE_URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(https?|ftp)://").unwrap());
+static BARE_URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^((https?|ftp)://|magnet:\?)").unwrap());
 
 pub fn parse_args(argv: &[String]) -> Args {
     let mut out = Args::default();

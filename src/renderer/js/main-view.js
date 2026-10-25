@@ -738,7 +738,7 @@ function setupDrop(el) {
   el.addEventListener('drop', (e) => {
     if (e.dataTransfer.types.includes('application/x-opendm-ids') || e.dataTransfer.types.includes('application/x-opendm-col')) return;
     const text = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain');
-    const urls = [...new Set((text.match(/\b(?:https?|ftp):\/\/[^\s"'<>]+/gi) || []))];
+    const urls = [...new Set((text.match(/\b(?:(?:https?|ftp):\/\/|magnet:\?)[^\s"'<>]+/gi) || []))];
     if (!urls.length) return;
     e.preventDefault();
     if (urls.length === 1) D.addUrlDialog(urls[0]);

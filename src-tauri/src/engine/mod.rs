@@ -9,6 +9,7 @@ pub mod limiter;
 pub mod muxed_download;
 pub mod net;
 pub mod proxy_resolver;
+pub mod torrent;
 pub mod ytdlp;
 
 use std::fs::File;

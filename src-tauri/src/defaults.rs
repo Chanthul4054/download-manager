@@ -144,6 +144,15 @@ pub fn default_settings() -> Value {
             "queueId": "main",
             "columnWidths": {},
         },
+        "torrent": {
+            "enableDht": true,
+            "enableLsd": true,
+            "enableUtp": false,
+            "enablePortForwarding": true,
+            "listenPort": 0,
+            "trackers": "",
+            "seedRatio": 1,
+        },
         "lastSaveDirs": {},
     })
 }
