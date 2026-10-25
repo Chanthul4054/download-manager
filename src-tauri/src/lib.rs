@@ -10,6 +10,7 @@ pub mod emitter;
 pub mod engine;
 pub mod error;
 pub mod grabber;
+pub mod hosters;
 pub mod integration;
 pub mod item;
 pub mod js;
