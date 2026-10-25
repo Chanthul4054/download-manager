@@ -297,7 +297,16 @@ export function optionsDialog(initial = 'general') {
         check('Use uTP as well as TCP', bt.enableUtp, (v) => (bt.enableUtp = v)),
         check('Forward the listening port on the router (UPnP)', bt.enablePortForwarding, (v) => (bt.enablePortForwarding = v)),
         field('Encryption', select([['prefer', 'Prefer encrypted connections'], ['require', 'Require encryption'], ['disable', 'Never encrypt']], bt.encryption, (v) => (bt.encryption = v)), 'Encryption hides BitTorrent traffic from ISP throttling. Requiring it finds fewer peers.'),
-        field('Listening port', h('div', { class: 'row' }, num(bt, 'listenPort', { min: 0, max: 65535 }), h('span', { class: 'hint' }, '0 = pick a free port'))))),
+        field('Listening port', h('div', { class: 'row' }, num(bt, 'listenPort', { min: 0, max: 65535 }), h('span', { class: 'hint' }, '0 = pick a free port'))),
+        (() => {
+          const said = { allowed: 'Allowed: peers can connect to you.', blocked: 'Blocked: peers cannot connect to you, which makes torrents slower.', none: 'Not allowed yet: Windows may ask the first time a torrent starts.' };
+          const status = h('span', { class: 'hint' }, 'Checking…');
+          const show = (s) => { status.textContent = said[s] || ''; row.hidden = s === 'unsupported'; };
+          const btn = h('button', { class: 'btn', onclick: async () => { btn.disabled = true; status.textContent = 'Waiting for Windows to confirm…'; try { show(await api.invoke('util:torrentFirewall', 'allow')); } catch (e) { toast(e.message); show(await api.invoke('util:torrentFirewall')); } btn.disabled = false; } }, 'Allow incoming peers');
+          const row = field('Windows Firewall', h('div', { class: 'row' }, btn, status), 'Needs administrator rights once. Incoming connections give torrents more peers.');
+          api.invoke('util:torrentFirewall').then(show, () => show('unsupported'));
+          return row;
+        })())),
       h('fieldset', {}, h('legend', {}, 'Seeding'),
         field('Keep sharing until uploaded', h('div', { class: 'row' }, num(bt, 'seedRatio', { min: 0, step: 0.1 }), h('span', { class: 'hint' }, '× the size. 0 = stop when the download is complete.')))),
       h('label', {}, 'Extra trackers added to every torrent (one per line):'), area(bt, 'trackers', 4),

@@ -143,6 +143,56 @@ async fn session(store: &Store, net: &NetContext) -> Result<Arc<Session>> {
         .cloned()
 }
 
+/// Windows Firewall state for incoming peers: "allowed", "blocked" (a block rule, e.g. from
+/// cancelling Windows' prompt), "none" or "unsupported". With `allow`, it first asks for admin rights
+/// (UAC) to replace OpenDM's inbound block rules with allow rules for TCP and UDP.
+pub async fn firewall(allow: bool) -> Result<String> {
+    if !cfg!(windows) {
+        return Ok("unsupported".into());
+    }
+    let exe = std::env::current_exe().map_err(err)?.to_string_lossy().replace('\'', "''");
+    let rules = format!("Get-NetFirewallApplicationFilter -Program '{exe}' -ErrorAction SilentlyContinue | Get-NetFirewallRule | Where-Object {{ $_.Direction -eq 'Inbound' -and $_.Enabled -eq 'True' }}");
+    if allow {
+        let fix = allow_script(&rules, &exe);
+        // -EncodedCommand (UTF-16LE base64) passes the script through the elevation without quoting.
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, fix.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>());
+        powershell(format!("Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-EncodedCommand','{b64}'")).await?;
+    }
+    // A program without rules makes the lookup "fail"; for this read that just means none.
+    let actions = powershell(format!("{rules} | ForEach-Object {{ [string]$_.Action }}; exit 0")).await?;
+    // Windows applies block rules over allow rules.
+    Ok(if actions.contains("Block") { "blocked" } else if actions.contains("Allow") { "allowed" } else { "none" }.into())
+}
+
+/// Replaces OpenDM's inbound block rules (and its own earlier rules) with allow rules. `exe` is
+/// already escaped for a single-quoted PowerShell string.
+fn allow_script(rules: &str, exe: &str) -> String {
+    format!(
+        "{rules} | Where-Object {{ $_.Action -eq 'Block' -or $_.DisplayName -eq 'OpenDM BitTorrent' }} | Remove-NetFirewallRule; \
+         'TCP','UDP' | ForEach-Object {{ New-NetFirewallRule -DisplayName 'OpenDM BitTorrent' -Direction Inbound -Program '{exe}' -Action Allow -Protocol $_ -Profile Any | Out-Null }}"
+    )
+}
+
+async fn powershell(script: String) -> Result<String> {
+    tokio::task::spawn_blocking(move || {
+        let mut c = std::process::Command::new("powershell");
+        c.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let out = c.output().map_err(err)?;
+        if !out.status.success() {
+            // Most often the UAC prompt was declined.
+            return Err(Error::new(String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("PowerShell failed").to_string()));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+    .await
+    .map_err(err)?
+}
+
 /// Tracker URLs, one per line; anything that is not an http(s)/udp tracker (a downloaded list is
 /// untrusted) is skipped.
 fn parse_trackers(lines: &str) -> std::collections::HashSet<url::Url> {
@@ -308,6 +358,22 @@ impl Engine for TorrentDownload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn firewall_check_reports_a_known_state() {
+        let s = firewall(false).await.unwrap();
+        assert!(["allowed", "blocked", "none"].contains(&s.as_str()), "{s}");
+    }
+
+    // The elevated script needs UAC, so a test can only check that PowerShell parses it.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn firewall_allow_script_parses() {
+        let fix = allow_script("Get-NetFirewallRule -Name x", r"C:\Program Files\It''s\opendm.exe").replace('\'', "''");
+        let n = powershell(format!("$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput('{fix}', [ref]$null, [ref]$e); $e.Count")).await.unwrap();
+        assert_eq!(n.trim(), "0", "{fix}");
+    }
 
     #[test]
     fn tracker_lists_keep_only_tracker_urls() {
