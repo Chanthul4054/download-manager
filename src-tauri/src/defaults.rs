@@ -149,6 +149,8 @@ pub fn default_settings() -> Value {
             "enableLsd": true,
             "enableUtp": false,
             "enablePortForwarding": true,
+            "enablePex": true,
+            "encryption": "prefer",
             "listenPort": 0,
             "trackers": "",
             "seedRatio": 1,

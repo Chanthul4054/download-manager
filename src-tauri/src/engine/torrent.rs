@@ -14,7 +14,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use librqbit::limits::LimitsConfig;
-use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerMode, ListenerOptions, ManagedTorrent, Session, SessionOptions, TorrentStatsState};
+use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, EncryptionPolicy, ListenerMode, ListenerOptions, ManagedTorrent, Session, SessionOptions, TorrentStatsState};
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
@@ -93,6 +93,12 @@ async fn session(store: &Store) -> Result<Arc<Session>> {
     let s = store.s(&["torrent"]);
     let on = |k: &str| js::truthy(js::get(&s, k));
     let (dht, lsd, utp, upnp) = (on("enableDht"), on("enableLsd"), on("enableUtp"), on("enablePortForwarding"));
+    let pex = on("enablePex");
+    let encryption = match js::str_of(js::get(&s, "encryption")).as_str() {
+        "require" => EncryptionPolicy::Require,
+        "disable" => EncryptionPolicy::Disable,
+        _ => EncryptionPolicy::Prefer,
+    };
     let port = js::num_or(js::get(&s, "listenPort"), 0.0).clamp(0.0, 65535.0) as u16;
     let trackers: std::collections::HashSet<url::Url> = js::str_of(js::get(&s, "trackers")).lines().filter_map(|l| url::Url::parse(l.trim()).ok()).collect();
     let dir = store.dir.join("torrents");
@@ -108,6 +114,8 @@ async fn session(store: &Store) -> Result<Arc<Session>> {
                         ..Default::default()
                     }),
                     disable_local_service_discovery: !lsd,
+                    disable_pex: !pex,
+                    encryption,
                     trackers,
                     ..Default::default()
                 };
