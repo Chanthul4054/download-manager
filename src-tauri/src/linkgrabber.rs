@@ -483,7 +483,21 @@ impl LinkGrabber {
     async fn check(&self, id: &str) -> Result<()> {
         let Some(link) = self.with_link(id, |l| l.clone()) else { return Ok(()) };
         if hosters::is_paste(&link.url) {
-            return self.open_paste(id, &link).await;
+            // Reading a burn-after-reading paste destroys it, and pastes only open one level deep
+            // (two pastes linking to each other would otherwise go round forever).
+            let why = if hosters::burns_after_reading(&link.url) {
+                "Burn-after-reading paste: open it in a browser"
+            } else if link.depth >= 2.0 {
+                "Paste inside a paste: not opened"
+            } else {
+                return self.open_paste(id, &link).await;
+            };
+            self.with_link(id, |l| {
+                l.status = "unknown".into();
+                l.enabled = false;
+                l.error = why.into();
+            });
+            return Ok(());
         }
         // A hoster page names its file in the fragment; its own size and type are the HTML's.
         let hosted = hosters::file_name(&link.url);
@@ -533,8 +547,8 @@ impl LinkGrabber {
                 if hosted.is_none() {
                     l.size = p.size;
                     l.kind = p.content_type.split(';').next().unwrap_or("").to_string();
+                    l.resumable = Some(p.resumable);
                 }
-                l.resumable = Some(p.resumable);
                 if !l.name_locked {
                     l.name = name.clone();
                 }
@@ -618,8 +632,15 @@ impl LinkGrabber {
 
     /// Opens a PrivateBin paste and puts the links inside in its place.
     async fn open_paste(&self, id: &str, link: &Link) -> Result<()> {
-        let text = hosters::fetch_paste(&self.net, &link.url, &ReqOpts { timeout_sec: Some(30.0), ..Default::default() }).await?;
-        let links: Vec<Value> = u::extract_urls(&text).into_iter().map(|url| json!({ "url": url, "text": link.description, "depth": 1 })).collect();
+        let mut o = ReqOpts { auth: link.auth.clone(), timeout_sec: Some(30.0), ..Default::default() };
+        if !link.referer.is_empty() {
+            o = o.header("Referer", &link.referer);
+        }
+        if !link.cookies.is_empty() {
+            o = o.header("Cookie", &link.cookies);
+        }
+        let text = hosters::fetch_paste(&self.net, &link.url, &o).await?;
+        let links: Vec<Value> = u::extract_urls(&text).into_iter().map(|url| json!({ "url": url, "text": link.description, "depth": 2 })).collect();
         if links.is_empty() {
             return Err(Error::new("The paste has no links"));
         }
@@ -863,7 +884,8 @@ impl LinkGrabber {
                     "referer": l.referer, "parentPage": l.referer, "cookies": l.cookies, "userAgent": l.user_agent,
                     "mime": l.kind, "duplicateAction": "number",
                 });
-                if l.status == "online" {
+                // A hoster page's name comes from its address, so it holds even when the check failed.
+                if l.status == "online" || hosters::file_name(&l.url).is_some() {
                     o["fileName"] = json!(l.name);
                 }
                 if let Some(d) = self.save_dir_for(pkg, l) {

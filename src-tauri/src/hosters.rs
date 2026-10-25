@@ -44,7 +44,12 @@ pub fn keeps_fragment(url: &str) -> bool {
 /// The file name a hoster page names in its fragment (fuckingfast.co/abc#Name.part01.rar).
 pub fn file_name(url: &str) -> Option<String> {
     let u = url::Url::parse(url).ok().filter(is_fuckingfast)?;
-    decode_uri_component(u.fragment()?).filter(|n| !n.is_empty())
+    decode_uri_component(u.fragment()?).map(|n| u::sanitize_file_name(&n)).filter(|n| !n.is_empty())
+}
+
+/// Newer PrivateBin marks burn-after-reading pastes with "#-" so they are not read by accident.
+pub fn burns_after_reading(url: &str) -> bool {
+    url.split_once('#').is_some_and(|(_, k)| k.starts_with('-'))
 }
 
 const B58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -156,10 +161,12 @@ mod tests {
         let paste = "https://paste.fitgirl-repacks.site/?dc64365f494f3ba0#8n4uE9cXrsNZHSeBn4iFnQq2gaC5x7k7aDs6M4L9h3pW";
         assert!(is_paste(paste) && keeps_fragment(paste));
         assert!(!is_paste("https://paste.fitgirl-repacks.site/?dc64365f494f3ba0"));
+        assert!(!burns_after_reading(paste) && burns_after_reading(&paste.replace('#', "#-")));
         let ff = "https://fuckingfast.co/abc123xyz#Some_Game_--_fitgirl-repacks.site_--_.part01.rar";
         assert!(needs_resolve(ff) && !needs_resolve("https://dl.fuckingfast.co/abc") && !needs_resolve("https://fuckingfast.co/"));
         assert_eq!(file_name(ff).as_deref(), Some("Some_Game_--_fitgirl-repacks.site_--_.part01.rar"));
         assert_eq!(file_name("https://example.com/a#b.rar"), None);
+        assert!(!file_name("https://fuckingfast.co/a#..%2F..%2Fx%3A%3F.rar").unwrap().contains(['/', ':', '?']));
     }
 
     #[test]
