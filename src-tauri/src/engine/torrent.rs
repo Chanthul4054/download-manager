@@ -14,7 +14,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use librqbit::limits::LimitsConfig;
-use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, EncryptionPolicy, ListenerMode, ListenerOptions, ManagedTorrent, Session, SessionOptions, TorrentStatsState};
+use librqbit::{dht::DhtPersistenceConfig, AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, EncryptionPolicy, ListenerMode, ListenerOptions, ManagedTorrent, Session, SessionOptions, TorrentStatsState};
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
@@ -102,11 +102,13 @@ async fn session(store: &Store) -> Result<Arc<Session>> {
     let port = js::num_or(js::get(&s, "listenPort"), 0.0).clamp(0.0, 65535.0) as u16;
     let trackers: std::collections::HashSet<url::Url> = js::str_of(js::get(&s, "trackers")).lines().filter_map(|l| url::Url::parse(l.trim()).ok()).collect();
     let dir = store.dir.join("torrents");
+    let dht_file = store.dir.join("dht.json");
     SESSION
         .get_or_try_init(|| async move {
             on_rt(async move {
                 let opts = SessionOptions {
-                    dht: dht.then(|| DhtSessionConfig { persistence: None, ..Default::default() }),
+                    // A saved routing table skips the DHT bootstrap, so magnets find peers sooner.
+                    dht: dht.then(|| DhtSessionConfig { persistence: Some(DhtPersistenceConfig { config_filename: Some(dht_file), ..Default::default() }), ..Default::default() }),
                     listen: Some(ListenerOptions {
                         mode: if utp { ListenerMode::TcpAndUtp } else { ListenerMode::TcpOnly },
                         listen_addr: (Ipv6Addr::UNSPECIFIED, port).into(),

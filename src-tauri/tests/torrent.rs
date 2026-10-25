@@ -54,3 +54,42 @@ fn downloads_from_the_swarm_then_stops_and_cleans_up() {
         panic!("the partial download was not deleted");
     });
 }
+
+/// Swarm throughput for tuning: a bare magnet (DHT only, so it also times metadata lookup), then
+/// the average rate over ODM_BT_SECS seconds. Settings can be patched with ODM_BT_SETTINGS (JSON).
+/// cargo test --release --test torrent bench -- --ignored --nocapture
+#[test]
+#[ignore]
+fn bench() {
+    run(async move {
+        let patch: serde_json::Value = std::env::var("ODM_BT_SETTINGS").map(|s| serde_json::from_str(&s).unwrap()).unwrap_or(json!({}));
+        let secs: u64 = std::env::var("ODM_BT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(40);
+        let env = setup("odm-torrent-bench-", json!({ "torrent": patch }));
+        // ODM_BT_DHT=<a saved dht.json> measures a warm start; the session reads it when first used.
+        if let Ok(f) = std::env::var("ODM_BT_DHT") {
+            std::fs::create_dir_all(&env.store.dir).unwrap();
+            std::fs::copy(f, env.store.dir.join("dht.json")).unwrap();
+        }
+        let started = std::time::Instant::now();
+        let r = env.mgr.add(&json!({ "url": "magnet:?xt=urn:btih:a3b4136a174e30b121a6bb6ab75b577ea7eda5f3", "start": true })).unwrap();
+        let id = r["item"]["id"].as_str().unwrap().to_string();
+        let item = env.mgr.get(&id).unwrap();
+        while item.borrow().downloaded == 0 {
+            assert_ne!(item.borrow().status, "error", "{:?}", item.borrow().error);
+            sleep(100).await;
+        }
+        let first = started.elapsed();
+        let (t0, b0) = (std::time::Instant::now(), item.borrow().downloaded);
+        let mut last = b0;
+        for _ in 0..secs / 5 {
+            sleep(5000).await;
+            let d = item.borrow().downloaded;
+            print!("{:.2} ", (d - last) as f64 / 5.0 / 1048576.0);
+            last = d;
+        }
+        println!();
+        let mb = (item.borrow().downloaded - b0) as f64 / 1048576.0;
+        println!("BENCH first byte {:.1}s, {:.2} MB/s over {secs}s", first.as_secs_f64(), mb / t0.elapsed().as_secs_f64());
+        env.mgr.remove(&[id], true).await;
+    });
+}

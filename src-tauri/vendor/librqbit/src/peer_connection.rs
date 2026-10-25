@@ -481,7 +481,9 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
 
         let reader = async move {
             loop {
-                let message = read_buf.read_message(&mut read, rwtimeout).await?;
+                // A choking seed can stay silent until its next optimistic unchoke (30s), so wait as
+                // long as libtorrent's peer_timeout; stalled requests are stolen by other peers.
+                let message = read_buf.read_message(&mut read, rwtimeout.max(Duration::from_secs(120))).await?;
                 trace!("received: {:?}", &message);
 
                 tokio::task::yield_now().await;

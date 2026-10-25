@@ -338,7 +338,45 @@ impl TorrentStateLive {
             format!("[{}]upload_scheduler", state.shared.id),
             state.clone().task_upload_scheduler(ratelimit_upload_rx),
         );
+
+        state.spawn(
+            debug_span!(parent: state.shared.span.clone(), "peer_turnover"),
+            format!("[{}]peer_turnover", state.shared.id),
+            Self::task_peer_turnover(Arc::downgrade(&state)),
+        );
         Ok(state)
+    }
+
+    /// qBittorrent's peer turnover (libtorrent defaults it sets): every 5 minutes, while downloading
+    /// with at least 90% of the peer slots in use, drop the slowest 4% so new peers get a chance.
+    /// Dropped peers go back to the queue and may be retried later.
+    async fn task_peer_turnover(state: std::sync::Weak<Self>) -> crate::Result<()> {
+        const INTERVAL: Duration = Duration::from_secs(300);
+        let mut prev: std::collections::HashMap<PeerHandle, u64> = Default::default();
+        loop {
+            tokio::time::sleep(INTERVAL).await;
+            let Some(state) = state.upgrade() else { return Ok(()) };
+            let limit = state.shared.options.peer_limit.unwrap_or(128);
+            let now: std::collections::HashMap<PeerHandle, u64> = state
+                .peers
+                .states
+                .iter()
+                .filter(|p| matches!(p.value().get_state(), PeerState::Live(_)))
+                .map(|p| (*p.key(), p.value().stats.counters.fetched_bytes.load(Ordering::Relaxed)))
+                .collect();
+            if !state.is_finished() && now.len() * 10 >= limit * 9 {
+                let victims = slowest_peers(&prev, &now, (now.len() * 4 / 100).max(1));
+                debug!(count = victims.len(), "peer turnover: dropping the slowest peers");
+                for h in victims {
+                    if let Some(p) = state.peers.states.get(&h)
+                        && let PeerState::Live(l) = p.value().get_state()
+                    {
+                        let _ = l.tx.send(WriterRequest::Disconnect(Ok(())));
+                    }
+                }
+            }
+            prev = now;
+        }
     }
 
     #[track_caller]
@@ -992,7 +1030,8 @@ impl TorrentStateLive {
     }
 }
 
-const DEFAULT_PEER_REQUEST_WINDOW: usize = 128;
+// libtorrent's max_out_request_queue, as qBittorrent sets it (RequestQueueSize): keeps fast, distant peers busy.
+const DEFAULT_PEER_REQUEST_WINDOW: usize = 500;
 
 struct PeerFlowControl {
     i_am_choked: bool,
@@ -2096,4 +2135,29 @@ fn format_peer_client_name(value: &ByteBuf<'_>) -> Option<String> {
     }
 
     Some(client_name)
+}
+
+/// The `n` peers that fetched the least since the last check. Only peers live at both checks are
+/// ranked, so a new connection is not judged on a partial interval.
+fn slowest_peers<K: Copy + Eq + std::hash::Hash + Ord>(
+    prev: &std::collections::HashMap<K, u64>,
+    now: &std::collections::HashMap<K, u64>,
+    n: usize,
+) -> Vec<K> {
+    let mut rates: Vec<(u64, K)> = now
+        .iter()
+        .filter_map(|(k, &b)| prev.get(k).map(|&a| (b.saturating_sub(a), *k)))
+        .collect();
+    rates.sort();
+    rates.into_iter().take(n).map(|(_, k)| k).collect()
+}
+
+#[cfg(test)]
+mod turnover_tests {
+    #[test]
+    fn drops_the_slowest_peers_that_were_already_connected() {
+        let prev = [(1, 0), (2, 100), (3, 0)].into();
+        let now = [(1, 500), (2, 110), (3, 50), (4, 0)].into(); // 4 is new: not ranked
+        assert_eq!(super::slowest_peers(&prev, &now, 2), vec![2, 3]);
+    }
 }
