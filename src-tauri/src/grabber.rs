@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::emitter::Emitter;
 use crate::engine::net::{NetContext, ReqOpts};
 use crate::error::{Error, Result};
+use crate::hosters;
 use crate::item::Auth;
 use crate::js;
 use crate::manager::{DownloadManager, MgrEvent};
@@ -111,7 +112,9 @@ pub fn extract_links(html: &str, page_url: &str) -> Vec<Link> {
         }
         let Some(base) = &base else { return };
         let Ok(mut abs) = base.join(&raw) else { return };
-        abs.set_fragment(None);
+        if !hosters::keeps_fragment(abs.as_str()) {
+            abs.set_fragment(None);
+        }
         if !matches!(abs.scheme(), "http" | "https" | "ftp") {
             return;
         }
@@ -651,6 +654,8 @@ mod tests {
         assert!(urls.contains(&"http://h/sub/s2.jpg"));
         assert!(!urls.iter().any(|u| u.starts_with("mailto")));
         assert_eq!(l.iter().find(|x| x.url.ends_with("a.pdf")).unwrap().text, "A doc");
+        let l = extract_links(r#"<a href="https://fuckingfast.co/x1#G.part01.rar">1</a><a href="/p#top">p</a>"#, "http://h/");
+        assert_eq!(l.iter().map(|x| x.url.as_str()).collect::<Vec<_>>(), ["https://fuckingfast.co/x1#G.part01.rar", "http://h/p"]);
     }
 
     #[test]

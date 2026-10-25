@@ -19,6 +19,7 @@ use crate::emitter::Emitter;
 use crate::engine::net::{NetContext, ReqOpts};
 use crate::error::{Error, Result};
 use crate::grabber::extract_links;
+use crate::hosters;
 use crate::item::Auth;
 use crate::js::{self, de_bool, de_f64, de_opt_bool, de_opt_f64, de_opt_string, de_string, now_ms};
 use crate::manager::DownloadManager;
@@ -385,7 +386,7 @@ impl LinkGrabber {
             let mut link = Link {
                 id: u::id(),
                 url: url.clone(),
-                name: self.manager.guess_name(&url, None, None),
+                name: hosters::file_name(&url).unwrap_or_else(|| self.manager.guess_name(&url, None, None)),
                 size: None,
                 kind: String::new(),
                 host: host_of(&url),
@@ -481,6 +482,11 @@ impl LinkGrabber {
 
     async fn check(&self, id: &str) -> Result<()> {
         let Some(link) = self.with_link(id, |l| l.clone()) else { return Ok(()) };
+        if hosters::is_paste(&link.url) {
+            return self.open_paste(id, &link).await;
+        }
+        // A hoster page names its file in the fragment; its own size and type are the HTML's.
+        let hosted = hosters::file_name(&link.url);
         let kind = self.manager.kind_for(&link.url, None);
         if kind != "http" {
             // FTP, streams and video pages are resolved when the download starts.
@@ -519,13 +525,15 @@ impl LinkGrabber {
         }
         let from_header = u::file_name_from_disposition(p.headers.get("content-disposition").map(|s| s.as_str()));
         let final_url = if p.url.is_empty() { link.url.clone() } else { p.url.clone() };
-        let name = self.manager.guess_name(&final_url, from_header.as_deref(), Some(&p.content_type));
+        let name = hosted.clone().unwrap_or_else(|| self.manager.guess_name(&final_url, from_header.as_deref(), Some(&p.content_type)));
         let (deep, depth) = self
             .with_link(id, |l| {
                 l.status = "online".into();
                 l.error = String::new();
-                l.size = p.size;
-                l.kind = p.content_type.split(';').next().unwrap_or("").to_string();
+                if hosted.is_none() {
+                    l.size = p.size;
+                    l.kind = p.content_type.split(';').next().unwrap_or("").to_string();
+                }
                 l.resumable = Some(p.resumable);
                 if !l.name_locked {
                     l.name = name.clone();
@@ -533,7 +541,7 @@ impl LinkGrabber {
                 (l.deep, l.depth)
             })
             .unwrap_or((false, 1.0));
-        if HTML_TYPE.is_match(&p.content_type) && from_header.is_none() {
+        if HTML_TYPE.is_match(&p.content_type) && from_header.is_none() && hosted.is_none() {
             if deep && depth == 0.0 && self.crawl(id, &final_url).await? {
                 return Ok(());
             }
@@ -598,15 +606,32 @@ impl LinkGrabber {
         let page_url = if f.url.is_empty() { page_url } else { f.url.as_str() };
         let files: Vec<_> = extract_links(&html, page_url)
             .into_iter()
-            .filter(|x| x.tag != "css" && !PAGE_EXT.contains(&u::ext_of(&url::Url::parse(&x.url).map(|p| p.path().to_string()).unwrap_or_default()).as_str()))
+            .filter(|x| x.tag != "css" && (hosters::keeps_fragment(&x.url) || !PAGE_EXT.contains(&u::ext_of(&url::Url::parse(&x.url).map(|p| p.path().to_string()).unwrap_or_default()).as_str())))
             .collect();
         if files.is_empty() {
             return Ok(false);
         }
+        let links = files.iter().map(|f| json!({ "url": f.url, "text": f.text, "depth": 1 })).collect();
+        self.replace_with(id, &link, links, page_url, &cookies);
+        Ok(true)
+    }
+
+    /// Opens a PrivateBin paste and puts the links inside in its place.
+    async fn open_paste(&self, id: &str, link: &Link) -> Result<()> {
+        let text = hosters::fetch_paste(&self.net, &link.url, &ReqOpts { timeout_sec: Some(30.0), ..Default::default() }).await?;
+        let links: Vec<Value> = u::extract_urls(&text).into_iter().map(|url| json!({ "url": url, "text": link.description, "depth": 1 })).collect();
+        if links.is_empty() {
+            return Err(Error::new("The paste has no links"));
+        }
+        self.replace_with(id, link, links, &link.referer, &link.cookies);
+        Ok(())
+    }
+
+    /// Adds links found inside a link (page or paste) and drops the link itself.
+    fn replace_with(&self, id: &str, link: &Link, links: Vec<Value>, referer: &str, cookies: &str) {
         let hit = self.store.linkgrabber.borrow().packages.iter().find(|p| p.links.iter().any(|l| l.id == id)).map(|p| p.id.clone());
         let mut opts = json!({
-            "links": files.iter().map(|f| json!({ "url": f.url, "text": f.text, "depth": 1 })).collect::<Vec<_>>(),
-            "referer": page_url, "cookies": cookies, "userAgent": link.user_agent, "auth": link.auth, "deep": false,
+            "links": links, "referer": referer, "cookies": cookies, "userAgent": link.user_agent, "auth": link.auth, "deep": false,
             "source": link.source,
         });
         if let Some(fp) = &link.forced_package {
@@ -619,7 +644,6 @@ impl LinkGrabber {
         if let Some(pid) = hit {
             detach(&mut self.store.linkgrabber.borrow_mut().packages, &pid, id);
         }
-        Ok(true)
     }
 
     // ---- editing ---------------------------------------------------------------------------------
