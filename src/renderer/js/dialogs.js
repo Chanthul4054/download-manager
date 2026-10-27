@@ -23,10 +23,10 @@ export async function addUrlDialog(prefill) {
     pass.disabled = !v;
   });
   const err = h('div', { class: 'status-err hidden', role: 'alert' });
-  // A local .torrent file goes in as a file:/// address (drive letter kept, the rest encoded).
+  // A local .torrent file goes in as a file:/// address (drive letter or Unix root kept, the rest encoded).
   const openTorrent = h('button', { class: 'btn', onclick: async () => {
     const f = await api.invoke('dialog:file', '', 'torrent');
-    if (f) inp.value = 'file:///' + f.replace(/\\/g, '/').split('/').map((x, i) => (i === 0 && /^[a-z]:$/i.test(x) ? x : encodeURIComponent(x))).join('/');
+    if (f) inp.value = 'file:///' + f.replace(/\\/g, '/').replace(/^\//, '').split('/').map((x, i) => (i === 0 && /^[a-z]:$/i.test(x) ? x : encodeURIComponent(x))).join('/');
   } }, 'Open .torrent file…');
   modal({
     title: 'Enter new address to download',

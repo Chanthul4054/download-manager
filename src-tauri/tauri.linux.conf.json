@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "resources": {
+      "../node_modules/ffmpeg-static/ffmpeg": "ffmpeg/ffmpeg"
+    }
+  }
+}

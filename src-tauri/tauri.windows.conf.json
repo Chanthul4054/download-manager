@@ -1,0 +1,15 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "resources": {
+      "../node_modules/ffmpeg-static/ffmpeg.exe": "ffmpeg/ffmpeg.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "startMenuFolder": "OpenDM"
+      }
+    }
+  }
+}

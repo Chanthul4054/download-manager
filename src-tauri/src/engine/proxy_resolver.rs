@@ -8,10 +8,65 @@ pub async fn resolve(url: String, mode: String, pac_url: String) -> String {
     tokio::task::spawn_blocking(move || imp::resolve(&url, &mode, &pac_url)).await.unwrap_or_else(|_| "DIRECT".into())
 }
 
+/// macOS and Linux: "system" means the standard proxy environment variables (http_proxy,
+/// https_proxy, ftp_proxy, all_proxy, no_proxy), which desktop proxy settings usually export.
+/// shortcut: PAC scripts are not evaluated here (DIRECT), and the macOS/GNOME proxy panels are not
+/// read directly; add a PAC engine or a scutil/gsettings reader if users need them.
 #[cfg(not(windows))]
 mod imp {
-    pub fn resolve(_url: &str, _mode: &str, _pac: &str) -> String {
-        "DIRECT".into()
+    pub fn resolve(url: &str, mode: &str, _pac: &str) -> String {
+        if mode == "system" {
+            from_env(url, &|k| std::env::var(k).ok()).unwrap_or_else(|| "DIRECT".into())
+        } else {
+            "DIRECT".into()
+        }
+    }
+
+    pub(super) fn from_env(url: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+        let var = |k: &str| env(k).or_else(|| env(&k.to_uppercase())).filter(|v| !v.trim().is_empty());
+        let u = url::Url::parse(url).ok()?;
+        let host = u.host_str()?.trim_matches(['[', ']']).to_ascii_lowercase();
+        let bypass = var("no_proxy").unwrap_or_default();
+        for p in bypass.split(',').map(|p| p.trim().trim_start_matches('*').trim_start_matches('.').to_ascii_lowercase()) {
+            let p = p.split(':').next().unwrap_or("");
+            if bypass.trim() == "*" || (!p.is_empty() && (host == p || host.ends_with(&format!(".{p}")))) {
+                return None;
+            }
+        }
+        let key = match u.scheme() {
+            "https" => "https_proxy",
+            "ftp" => "ftp_proxy",
+            _ => "http_proxy",
+        };
+        let raw = var(key).or_else(|| var("all_proxy"))?;
+        let p = url::Url::parse(&raw).or_else(|_| url::Url::parse(&format!("http://{raw}"))).ok()?;
+        let kind = match p.scheme() {
+            "socks5" | "socks5h" | "socks" => "SOCKS5",
+            "socks4" | "socks4a" => "SOCKS4",
+            _ => "PROXY",
+        };
+        let port = p.port_or_known_default().unwrap_or(if kind == "PROXY" { 80 } else { 1080 });
+        Some(format!("{kind} {}:{port}", p.host_str()?))
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::imp::from_env;
+
+    #[test]
+    fn env_proxies_follow_scheme_and_no_proxy() {
+        let env = |k: &str| match k {
+            "http_proxy" => Some("http://proxy.lan:3128".to_string()),
+            "ALL_PROXY" => Some("socks5h://sock.lan".to_string()),
+            "no_proxy" => Some("localhost, .corp.example".to_string()),
+            _ => None,
+        };
+        assert_eq!(from_env("http://a.com/x", &env).as_deref(), Some("PROXY proxy.lan:3128"));
+        assert_eq!(from_env("https://a.com/x", &env).as_deref(), Some("SOCKS5 sock.lan:1080"));
+        assert_eq!(from_env("http://files.corp.example/", &env), None);
+        assert_eq!(from_env("http://localhost:8080/", &env), None);
+        assert_eq!(from_env("http://a.com/", &|_| None), None);
     }
 }
 

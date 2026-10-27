@@ -228,7 +228,7 @@ fn str_list(v: &Value) -> Vec<String> {
     v.as_array().map(|a| a.iter().map(js::str_of).collect()).unwrap_or_default()
 }
 
-/// Windows' "apps use dark mode" setting (Electron's nativeTheme.shouldUseDarkColors for "system").
+/// The OS dark-mode setting. On Windows, the "apps use dark mode" setting (Electron's nativeTheme.shouldUseDarkColors for "system").
 /// Read from the registry, as Chromium does: the window toolkit's own check misreports it on some
 /// Windows builds.
 pub fn system_dark() -> bool {
@@ -250,6 +250,20 @@ pub fn system_dark() -> bool {
             )
         };
         return r.is_ok() && value == 0;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Prints "Dark" only in dark mode; light mode has no such key.
+        let out = std::process::Command::new("defaults").args(["read", "-g", "AppleInterfaceStyle"]).output();
+        return out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "Dark");
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // The freedesktop color-scheme key (GNOME 42+, also set by KDE); older desktops name a "-dark" GTK theme.
+        let get = |key: &str| {
+            std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", key]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase()).unwrap_or_default()
+        };
+        return get("color-scheme").contains("dark") || get("gtk-theme").contains("-dark");
     }
     #[allow(unreachable_code)]
     false
@@ -1416,6 +1430,7 @@ impl App {
     /// Sets the page's prefers-color-scheme (the UI's light/dark CSS). Tauri derives it from the
     /// window toolkit's theme, which ignores the setting on some Windows builds, so it is set on
     /// the WebView2 profile directly.
+    #[cfg_attr(not(windows), allow(unused_variables))]
     fn apply_color_scheme(&self, w: &WebviewWindow) {
         #[cfg(windows)]
         {
@@ -2127,6 +2142,9 @@ impl App {
         let Some(path) = it.borrow().saved_path.clone().filter(|p| std::path::Path::new(p).exists()) else { return };
         let Some(w) = self.handle.get_webview_window(label) else { return };
         let _ = self.handle.run_on_main_thread(move || {
+            // GTK drags start from the native window; Windows and macOS take the Tauri window.
+            #[cfg(target_os = "linux")]
+            let Ok(w) = w.gtk_window() else { return };
             let _ = drag::start_drag(
                 &w,
                 drag::DragItem::Files(vec![PathBuf::from(path)]),

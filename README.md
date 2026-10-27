@@ -1,6 +1,6 @@
 # OpenDM
 
-A multi-connection download manager for Windows, built in Rust with [Tauri](https://tauri.app/)
+A multi-connection download manager for Windows, macOS and Linux, built in Rust with [Tauri](https://tauri.app/)
 and a plain HTML/JavaScript interface. It comes with a Chrome/Edge extension that hands browser
 downloads and web videos to the app.
 
@@ -35,6 +35,19 @@ downloads and web videos to the app.
 3. Pick an install folder (or keep the default) and click **Install**. No administrator rights are
    needed. OpenDM starts when setup finishes, and gets Start-menu and desktop shortcuts.
 
+### macOS and Linux
+
+- **macOS**: open `OpenDM-<version>.dmg` and drag OpenDM to Applications. The app is not signed,
+  so the first time right-click it and choose **Open**.
+- **Linux**: install `OpenDM-<version>.deb` (`sudo apt install ./OpenDM-<version>.deb`), or make
+  `OpenDM-<version>.AppImage` executable and run it. The tray icon needs a desktop with
+  AppIndicator support (on GNOME, the AppIndicator extension).
+
+Shutdown/sleep when done uses `systemctl` on Linux and System Events on macOS. The BitTorrent
+"Windows Firewall" button only appears on Windows. With the "system" proxy, macOS and Linux use
+the `http_proxy`/`https_proxy`/`all_proxy`/`no_proxy` environment variables; PAC scripts are
+Windows-only for now.
+
 FFmpeg is included. yt-dlp, used for YouTube, is downloaded the first time you need it. yt-dlp
 needs a JavaScript runtime to read YouTube pages: if [Node.js](https://nodejs.org/) is on your
 `PATH` OpenDM points yt-dlp at it, otherwise yt-dlp uses [Deno](https://deno.com/) if installed.
@@ -55,14 +68,17 @@ closed. To quit it completely, use **Tasks → Exit**.
 ### Uninstall
 
 Use **Settings → Apps → Installed apps → OpenDM → Uninstall**. Your download list and settings
-are kept in `%APPDATA%\OpenDM`; delete that folder too if you want to remove them.
+are kept in `%APPDATA%\OpenDM` (`~/Library/Application Support/OpenDM` on macOS,
+`~/.config/OpenDM` on Linux); delete that folder too if you want to remove them.
 
 ## Requirements (running from source)
 
 - [Rust](https://rustup.rs/) (stable). On Windows, also the
   [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the
   "Desktop development with C++" workload.
-- WebView2, which Windows 10 and 11 already have.
+- WebView2, which Windows 10 and 11 already have. On Linux, the WebKitGTK and AppIndicator
+  development packages: `sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+  librsvg2-dev libxdo-dev libssl-dev` (Debian/Ubuntu). On macOS, the Xcode command-line tools.
 - [Node.js](https://nodejs.org/) 18 or newer, for the Tauri command-line tool and the bundled FFmpeg
   (the optional `ffmpeg-static` package). The app itself does not use Node.
 - Optional: [FFmpeg](https://ffmpeg.org/) on your `PATH` instead, or set its path in
@@ -123,8 +139,9 @@ npm install
 npm run dist
 ```
 
-This uses the Tauri bundler to build an NSIS installer for 64-bit Windows and copies it to
-`dist/OpenDM-Setup-<version>.exe`. The browser extension and FFmpeg are installed next to the app.
+This uses the Tauri bundler to build the installer for the OS you run it on and copies it to
+`dist/`: `OpenDM-Setup-<version>.exe` (Windows), `OpenDM-<version>.dmg` (macOS), or
+`OpenDM-<version>.deb` and `.AppImage` (Linux). The GitHub Actions workflow builds all three. The browser extension and FFmpeg are installed next to the app.
 
 To publish a new version:
 

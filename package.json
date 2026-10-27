@@ -10,7 +10,7 @@
   "scripts": {
     "start": "tauri dev",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "dist": "tauri build && node -e \"const fs=require('fs'),v=require('./package.json').version,d='src-tauri/target/release/bundle/nsis/';fs.mkdirSync('dist',{recursive:true});fs.copyFileSync(d+fs.readdirSync(d).find(f=>f.endsWith('-setup.exe')),'dist/OpenDM-Setup-'+v+'.exe');console.log('dist/OpenDM-Setup-'+v+'.exe')\""
+    "dist": "tauri build && node scripts/dist.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.4"
