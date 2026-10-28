@@ -26,7 +26,8 @@ export async function addUrlDialog(prefill) {
   // A local .torrent file goes in as a file:/// address (drive letter or Unix root kept, the rest encoded).
   const openTorrent = h('button', { class: 'btn', onclick: async () => {
     const f = await api.invoke('dialog:file', '', 'torrent');
-    if (f) inp.value = 'file:///' + f.replace(/\\/g, '/').replace(/^\//, '').split('/').map((x, i) => (i === 0 && /^[a-z]:$/i.test(x) ? x : encodeURIComponent(x))).join('/');
+    // Only Windows paths (C:\… or \\server\…) use backslashes as separators; on Unix it is a file-name character.
+    if (f) inp.value = 'file:///' + (/^([a-z]:)?\\/i.test(f) ? f.replace(/\\/g, '/') : f).replace(/^\//, '').split('/').map((x, i) => (i === 0 && /^[a-z]:$/i.test(x) ? x : encodeURIComponent(x))).join('/');
   } }, 'Open .torrent file…');
   modal({
     title: 'Enter new address to download',
