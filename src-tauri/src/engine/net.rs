@@ -92,7 +92,8 @@ impl Proxy {
     }
 }
 
-/// Parses PAC/Chromium resolveProxy output: "PROXY h:p; SOCKS5 h:p; DIRECT".
+/// Parses PAC/Chromium resolveProxy output: "PROXY h:p; SOCKS5 h:p; DIRECT". An address may carry a
+/// percent-encoded login ("PROXY user:pass@h:p"), as the proxy environment variables do.
 pub fn parse_proxy_string(s: &str) -> Proxy {
     let s = if s.is_empty() { "DIRECT" } else { s };
     for part in s.split(';').map(|x| x.trim()).filter(|x| !x.is_empty()) {
@@ -103,10 +104,13 @@ pub fn parse_proxy_string(s: &str) -> Proxy {
             return Proxy::direct();
         }
         let Some(addr) = addr else { continue };
+        let (login, addr) = addr.rsplit_once('@').unwrap_or(("", addr));
+        let (user, pass) = login.split_once(':').unwrap_or((login, ""));
+        let (user, pass) = (decode_uri_component(user).unwrap_or_default(), decode_uri_component(pass).unwrap_or_default());
         let i = addr.rfind(':').unwrap_or(addr.len());
         let host = addr[..i].to_string();
         let port = addr.get(i + 1..).and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
-        let mk = |k: ProxyKind, version: u8| Proxy { kind: k, host: host.clone(), port, user: String::new(), pass: String::new(), version };
+        let mk = |k: ProxyKind, version: u8| Proxy { kind: k, host: host.clone(), port, user: user.clone(), pass: pass.clone(), version };
         match kind.to_ascii_uppercase().as_str() {
             "PROXY" | "HTTP" | "HTTPS" => return mk(ProxyKind::Http, 5),
             "SOCKS" | "SOCKS5" => return mk(ProxyKind::Socks, 5),
@@ -542,6 +546,8 @@ mod tests {
         let s = parse_proxy_string("SOCKS4 h:1080");
         assert_eq!((s.kind, s.version), (ProxyKind::Socks, 4));
         assert_eq!(parse_proxy_string("").kind, ProxyKind::Direct);
+        let a = parse_proxy_string("PROXY alice:s%3Acret@proxy.corp:3128");
+        assert_eq!((a.host.as_str(), a.port, a.user.as_str(), a.pass.as_str()), ("proxy.corp", 3128, "alice", "s:cret"));
     }
 
     #[test]
