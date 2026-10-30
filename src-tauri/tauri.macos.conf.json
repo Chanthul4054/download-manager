@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "targets": ["dmg"],
+    "resources": {
+      "../node_modules/ffmpeg-static/ffmpeg": "ffmpeg/ffmpeg"
+    }
+  }
+}

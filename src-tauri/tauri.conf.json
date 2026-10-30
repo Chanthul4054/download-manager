@@ -15,7 +15,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": "all",
     "publisher": "OpenDM contributors",
     "copyright": "OpenDM contributors",
     "shortDescription": "OpenDM",
@@ -27,15 +27,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../extension/": "extension/",
-      "../node_modules/ffmpeg-static/ffmpeg.exe": "ffmpeg/ffmpeg.exe"
-    },
-    "windows": {
-      "nsis": {
-        "installMode": "currentUser",
-        "displayLanguageSelector": false,
-        "startMenuFolder": "OpenDM"
-      }
+      "../extension/": "extension/"
     }
   }
 }
