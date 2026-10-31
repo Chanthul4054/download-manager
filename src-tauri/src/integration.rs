@@ -18,6 +18,8 @@ pub struct IntegrationRequest {
     pub method: String,
     pub path: String,
     pub origin: String,
+    /// The Host header: a DNS-rebinding page reaches us under its own name.
+    pub host: String,
     pub x_opendm: String,
     /// None when the body was larger than 4 MB.
     pub body: Option<Vec<u8>>,
@@ -30,8 +32,12 @@ const MAX_BODY: usize = 4 * 1024 * 1024;
 
 static EXT_ORIGIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(chrome|moz|ms-browser|safari-web)-extension://").unwrap());
 static BARE_EXT_ORIGIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^extension://").unwrap());
+static LOCAL_HOST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(127\.0\.0\.1|localhost)(:\d+)?$").unwrap());
 
 pub fn allowed(req: &IntegrationRequest) -> bool {
+    if !LOCAL_HOST.is_match(&req.host) {
+        return false;
+    }
     if !req.origin.is_empty() && !EXT_ORIGIN.is_match(&req.origin) && !BARE_EXT_ORIGIN.is_match(&req.origin) {
         return false;
     }
@@ -84,6 +90,7 @@ impl IntegrationServer {
                     method: req.method().as_str().to_uppercase(),
                     path: req.url().split('?').next().unwrap_or("").to_string(),
                     origin: header("Origin"),
+                    host: header("Host"),
                     x_opendm: header("X-OpenDM"),
                     body: Some(Vec::new()),
                 };
@@ -150,7 +157,7 @@ mod tests {
     use super::*;
 
     fn req(origin: &str, x: &str, method: &str, path: &str, body: &str) -> IntegrationRequest {
-        IntegrationRequest { method: method.into(), path: path.into(), origin: origin.into(), x_opendm: x.into(), body: Some(body.as_bytes().to_vec()) }
+        IntegrationRequest { method: method.into(), path: path.into(), origin: origin.into(), host: "127.0.0.1:52790".into(), x_opendm: x.into(), body: Some(body.as_bytes().to_vec()) }
     }
 
     #[test]
@@ -163,5 +170,8 @@ mod tests {
         assert_eq!(ok(req("", "1", "POST", "/api/download", "{bad")), 400);
         assert_eq!(ok(req("moz-extension://x", "1", "POST", "/api/download", r#"{"url":"http://a/b"}"#)), 200);
         assert_eq!(ok(req("moz-extension://x", "1", "POST", "/api/nope", "{}")), 404);
+        let mut rebound = req("", "1", "GET", "/api/config", "");
+        rebound.host = "evil.com:52790".into();
+        assert_eq!(ok(rebound), 403);
     }
 }
