@@ -46,21 +46,22 @@
     refreshVideoPage();
   });
 
-  addEventListener('keydown', (e) => e.key === 'Insert' && (insertHeld = true), true);
-  addEventListener('keyup', (e) => e.key === 'Insert' && (insertHeld = false), true);
+  // Only real input counts: a page can dispatch fake key and click events to push links into OpenDM.
+  addEventListener('keydown', (e) => e.isTrusted && e.key === 'Insert' && (insertHeld = true), true);
+  addEventListener('keyup', (e) => e.isTrusted && e.key === 'Insert' && (insertHeld = false), true);
   addEventListener('blur', () => (insertHeld = false));
 
   const forceHeld = (e) => ({ Insert: insertHeld, Alt: e.altKey, Shift: e.shiftKey, Ctrl: e.ctrlKey })[cfg.forceKey] || false;
 
   addEventListener('mousedown', (e) => {
-    if (!e.target.closest?.('a[href]')) return;
+    if (!e.isTrusted || !e.target.closest?.('a[href]')) return;
     safeSend({ type: 'odm-click', alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey, insert: insertHeld });
   }, true);
 
   // Force key on any link: hand it to OpenDM even if the browser would just navigate.
   addEventListener('click', (e) => {
     const a = e.target.closest?.('a[href]');
-    if (!a || !cfg.active || !cfg.forceKey || !forceHeld(e)) return;
+    if (!e.isTrusted || !a || !cfg.active || !cfg.forceKey || !forceHeld(e)) return;
     if (!/^(https?|ftp):/i.test(a.href)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
