@@ -17,7 +17,7 @@ use super::{interval, Ctx, Engine, EngineEvent, Meta, Sink};
 use crate::error::{Error, Result};
 use crate::item::{ExtraFile, ItemRef, INF};
 use crate::js;
-use crate::util::{extname, hostname, move_file, rm_force};
+use crate::util::{cookies_for, extname, hostname, move_file, rm_force};
 
 enum PartResult {
     Done,
@@ -62,7 +62,7 @@ impl MuxedDownload {
         }
         p.referer = it.referer.clone();
         // Only forward cookies to the page's own host (never e.g. youtube.com cookies to googlevideo.com).
-        p.cookies = if hostname(&p.url) == hostname(&it.url) { it.cookies.clone() } else { String::new() };
+        p.cookies = cookies_for(&p.url, &it.url, &it.cookies);
         p.user_agent = it.user_agent.clone();
         p.max_connections = it.max_connections;
         p.speed_limit_kb = it.speed_limit_kb;

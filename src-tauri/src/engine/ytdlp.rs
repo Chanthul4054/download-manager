@@ -67,6 +67,16 @@ pub async fn install_ytdlp(net: &NetContext, bin_dir: &std::path::Path) -> Resul
     if body.len() < 1024 * 1024 {
         return Err(Error::new("Downloaded yt-dlp looks incomplete"));
     }
+    // The release lists a SHA-256 for every build; a program we are about to run must match it.
+    let (base, name) = url.rsplit_once('/').unwrap_or(("", url));
+    let sums = net.fetch_buffer(&format!("{}/SHA2-256SUMS", base), &ReqOpts { max_bytes: Some(256 * 1024), timeout_sec: Some(30.0), ..Default::default() }).await?.body;
+    let want = checksum_for(&String::from_utf8_lossy(&sums), name).ok_or_else(|| Error::new("yt-dlp checksum not found"))?;
+    {
+        use sha2::Digest;
+        if hex::encode(sha2::Sha256::digest(&body)) != want {
+            return Err(Error::new("Downloaded yt-dlp does not match its published checksum"));
+        }
+    }
     tokio::fs::create_dir_all(bin_dir).await?;
     let dest = bin_dir.join(exe());
     let tmp = std::path::PathBuf::from(format!("{}.new", dest.display()));
@@ -78,6 +88,14 @@ pub async fn install_ytdlp(net: &NetContext, bin_dir: &std::path::Path) -> Resul
     }
     tokio::fs::rename(&tmp, &dest).await?;
     Ok(dest.to_string_lossy().into_owned())
+}
+
+/// The hash for `name` in a sha256sum-style listing ("<hex>  <file>" per line).
+fn checksum_for(sums: &str, name: &str) -> Option<String> {
+    sums.lines().find_map(|l| {
+        let (h, n) = l.trim().split_once(char::is_whitespace)?;
+        (n.trim().trim_start_matches('*') == name).then(|| h.to_lowercase())
+    })
 }
 
 /// yt-dlp needs a JavaScript runtime to solve YouTube's player challenges (otherwise formats are
@@ -527,6 +545,17 @@ impl Engine for YtDlpDownload {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn finds_the_checksum_of_one_build() {
+        let sums = "AB12  yt-dlp
+cd34  yt-dlp.exe
+ef56  yt-dlp_macos
+";
+        assert_eq!(super::checksum_for(sums, "yt-dlp.exe").as_deref(), Some("cd34"));
+        assert_eq!(super::checksum_for(sums, "yt-dlp").as_deref(), Some("ab12"));
+        assert_eq!(super::checksum_for(sums, "yt-dlp_linux"), None);
+    }
     use super::*;
 
     #[test]

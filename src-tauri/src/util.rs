@@ -379,6 +379,13 @@ pub async fn write_json_atomic(file: &Path, data: &Value) -> Result<()> {
         tokio::fs::create_dir_all(d).await?;
     }
     tokio::fs::write(&tmp, serde_json::to_string_pretty(data)?).await?;
+    // Settings hold site logins, proxy and 2Captcha keys; downloads hold cookies. Owner-only on
+    // Unix (on Windows the per-user AppData folder already is).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
+    }
     tokio::fs::rename(&tmp, file).await?;
     Ok(())
 }
@@ -423,10 +430,24 @@ pub fn hostname(u: &str) -> String {
     url::Url::parse(u).ok().and_then(|x| x.host_str().map(|h| h.to_string())).unwrap_or_default()
 }
 
+/// `cookies` captured for `origin`, or none when `url` is on another host: a page's cookies must
+/// never reach a third-party link, CDN or redirect target.
+pub fn cookies_for(url: &str, origin: &str, cookies: &str) -> String {
+    let h = hostname(url);
+    if !h.is_empty() && h.eq_ignore_ascii_case(&hostname(origin)) { cookies.to_string() } else { String::new() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cookies_stay_on_their_host() {
+        assert_eq!(cookies_for("https://mail.example.com/a.zip", "https://mail.example.com/inbox", "sid=1"), "sid=1");
+        assert_eq!(cookies_for("https://evil.test/x", "https://mail.example.com/inbox", "sid=1"), "");
+        assert_eq!(cookies_for("https://evil.test/x", "", "sid=1"), "");
+    }
 
     #[test]
     fn utilities() {

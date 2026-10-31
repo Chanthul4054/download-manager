@@ -131,6 +131,12 @@ impl TorrentStorage for FilesystemStorage {
         for file_details in metadata.file_infos.iter() {
             let mut full_path = self.output_folder.clone();
             let relative_path = &file_details.relative_filename;
+            // OpenDM: librqbit-core rejects ".." and slashes but not a Windows drive ("C:"), which
+            // would make push() replace the output folder. Only plain names may follow it.
+            anyhow::ensure!(
+                relative_path.components().all(|c| matches!(c, std::path::Component::Normal(_))),
+                "torrent file path {relative_path:?} leaves the download folder"
+            );
             full_path.push(relative_path);
 
             if file_details.attrs.padding {
