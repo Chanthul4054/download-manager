@@ -193,14 +193,15 @@ impl HlsDownload {
         (self.sink)(e);
     }
 
-    fn headers(&self) -> Vec<(String, String)> {
+    fn headers(&self, url: &str) -> Vec<(String, String)> {
         let it = self.item.borrow();
         let mut h = Vec::new();
         if !it.referer.is_empty() {
             set_header(&mut h, "Referer", &it.referer);
         }
-        if !it.cookies.is_empty() {
-            set_header(&mut h, "Cookie", &it.cookies);
+        let cookies = crate::util::cookies_for(url, &it.url, &it.cookies);
+        if !cookies.is_empty() {
+            set_header(&mut h, "Cookie", &cookies);
         }
         if !it.user_agent.is_empty() {
             set_header(&mut h, "User-Agent", &it.user_agent);
@@ -209,7 +210,7 @@ impl HlsDownload {
     }
 
     async fn fetch(&self, url: &str, extra: &[(String, String)]) -> Result<super::net::Fetched> {
-        let mut headers = self.headers();
+        let mut headers = self.headers(url);
         for (k, v) in extra {
             set_header(&mut headers, k, v);
         }
@@ -350,7 +351,7 @@ impl HlsDownload {
         loop {
             let r: Result<()> = async {
                 self.set_active(i, Some(0));
-                let opts = ReqOpts { headers: self.headers(), signal: Some(self.abort.clone()), ..Default::default() };
+                let opts = ReqOpts { headers: self.headers(&seg.uri), signal: Some(self.abort.clone()), ..Default::default() };
                 let mut res = self.ctx.net.request(&seg.uri, &opts).await?;
                 if res.status >= 400 {
                     res.destroy();

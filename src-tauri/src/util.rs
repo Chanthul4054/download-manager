@@ -430,11 +430,25 @@ mod tests {
 
     #[test]
     fn utilities() {
+/// `cookies` captured for `origin`, or none when `url` is on another host: a page's cookies must
+/// never reach a third-party link, CDN or redirect target.
+pub fn cookies_for(url: &str, origin: &str, cookies: &str) -> String {
+    let h = hostname(url);
+    if !h.is_empty() && h.eq_ignore_ascii_case(&hostname(origin)) { cookies.to_string() } else { String::new() }
+}
+
         assert_eq!(
             expand_batch("http://x/img*.jpg", &json!(1), &json!(3), &json!(2)).unwrap(),
             vec!["http://x/img01.jpg", "http://x/img02.jpg", "http://x/img03.jpg"]
         );
         assert_eq!(
+    #[test]
+    fn cookies_stay_on_their_host() {
+        assert_eq!(cookies_for("https://mail.example.com/a.zip", "https://mail.example.com/inbox", "sid=1"), "sid=1");
+        assert_eq!(cookies_for("https://evil.test/x", "https://mail.example.com/inbox", "sid=1"), "");
+        assert_eq!(cookies_for("https://evil.test/x", "", "sid=1"), "");
+    }
+
             expand_batch("http://x/*.zip", &json!("a"), &json!("c"), &Value::Null).unwrap(),
             vec!["http://x/a.zip", "http://x/b.zip", "http://x/c.zip"]
         );

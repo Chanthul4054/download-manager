@@ -396,7 +396,7 @@ impl LinkGrabber {
                 in_list: self.manager.find_duplicate(&url).is_some(),
                 description: if text.is_empty() { js::str_of(js::get(opts, "description")) } else { text },
                 referer: js::str_of(js::get(opts, "referer")),
-                cookies: js::str_of(js::get(opts, "cookies")),
+                cookies: u::cookies_for(&url, &js::str_of(js::get(opts, "referer")), &js::str_of(js::get(opts, "cookies"))),
                 user_agent: js::str_of(js::get(opts, "userAgent")),
                 auth: Auth::from_value(js::get(opts, "auth")),
                 deep,
