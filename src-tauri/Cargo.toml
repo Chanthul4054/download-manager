@@ -1,6 +1,6 @@
 [package]
 name = "opendm"
-version = "1.1.0"
+version = "2.0.0"
 description = "A multi-connection download manager with browser integration, queues, scheduler, site grabber and video capture."
 authors = ["OpenDM contributors"]
 license = "MIT"
