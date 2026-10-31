@@ -234,3 +234,26 @@ fn scheduler_starts_a_queue_at_its_start_time() {
         env.mgr.dispose();
     });
 }
+
+#[test]
+fn cookies_do_not_follow_a_redirect_to_another_host() {
+    let s = TestServer::start(Arc::new(|req: &Req| {
+        let port = req.header("host").and_then(|h| h.rsplit(':').next()).unwrap_or("").to_string();
+        match req.path() {
+            "/same" => Resp::new(302, "").header("Location", "/land"),
+            "/away" => Resp::new(302, "").header("Location", format!("http://localhost:{}/land", port)),
+            _ => Resp::new(200, req.header("cookie").unwrap_or("none").to_string()),
+        }
+    }));
+    run(async move {
+        let env = setup("odm-test-", json!({}));
+        let opts = opendm_lib::engine::net::ReqOpts { headers: vec![("Cookie".into(), "sid=secret".into())], ..Default::default() };
+        let body = |path: &'static str| {
+            let (net, opts, base) = (env.net.clone(), opts.clone(), s.base.clone());
+            async move { String::from_utf8(net.fetch_buffer(&format!("{}{}", base, path), &opts).await.unwrap().body).unwrap() }
+        };
+        assert_eq!(body("/same").await, "sid=secret");
+        assert_eq!(body("/away").await, "none");
+        env.mgr.dispose();
+    });
+}

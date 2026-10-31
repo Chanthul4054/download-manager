@@ -325,6 +325,7 @@ impl NetContext {
         let timeout = Duration::from_millis((timeout_sec * 1000.0).max(1.0) as u64);
         let user_agent = js::str_of(&self.store.s(&["downloads", "userAgent"]));
         let mut url = url_str.to_string();
+        let first = url::Url::parse(url_str).ok();
         let creds = opts.auth.clone().or_else(|| self.login_for(&url));
         let mut tried_auth = false;
         let mut method = opts.method.clone().unwrap_or(reqwest::Method::GET);
@@ -345,10 +346,16 @@ impl NetContext {
                 ("Accept".into(), "*/*".into()),
                 ("Accept-Encoding".into(), "identity".into()),
             ];
+            // Credentials stay with the address they were given for: a redirect to another host, or
+            // from https down to http, must not carry the caller's cookies or login.
+            let same_site = first.as_ref().is_some_and(|f| f.host_str() == u.host_str() && (secure || f.scheme() != "https"));
             for (k, v) in &opts.headers {
+                if !same_site && (k.eq_ignore_ascii_case("cookie") || k.eq_ignore_ascii_case("authorization")) {
+                    continue;
+                }
                 set_header(&mut h, k, v);
             }
-            if let Some(c) = &creds {
+            if let Some(c) = creds.as_ref().filter(|_| same_site) {
                 if tried_auth || opts.auth.is_some() {
                     set_header(&mut h, "Authorization", &basic(&c.user, &c.pass));
                 }
@@ -388,7 +395,7 @@ impl NetContext {
                     continue;
                 }
             }
-            if status == 401 && creds.is_some() && !tried_auth {
+            if status == 401 && creds.is_some() && same_site && !tried_auth {
                 tried_auth = true;
                 continue;
             }
