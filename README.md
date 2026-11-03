@@ -1,8 +1,20 @@
 # OpenDM
 
-A multi-connection download manager for Windows, macOS and Linux, built in Rust with [Tauri](https://tauri.app/)
-and a plain HTML/JavaScript interface. It comes with a Chrome/Edge extension that hands browser
-downloads and web videos to the app.
+**A free, fast download manager for Windows, macOS and Linux: split files across connections, resume anything, grab torrents and web video.**
+
+[![build](https://github.com/Chanthul4054/download-manager/actions/workflows/build.yml/badge.svg)](https://github.com/Chanthul4054/download-manager/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/Chanthul4054/download-manager)](https://github.com/Chanthul4054/download-manager/releases/latest)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Chanthul4054/download-manager/main/install.sh | sh
+```
+
+That installs the latest release on Linux or macOS. On Windows, run
+[`OpenDM-Setup.exe`](https://github.com/Chanthul4054/download-manager/releases/latest) from the latest release.
+
+Built in Rust with [Tauri](https://tauri.app/) and a plain HTML/JavaScript interface. It comes with
+a Chrome/Edge extension that hands browser downloads and web videos to the app.
 
 ## Features
 
@@ -177,7 +189,11 @@ The local server only accepts requests from the browser extension, which sends a
 `X-OpenDM: 1` header. Ordinary web pages can't send that header without a CORS preflight, and
 OpenDM never approves the preflight.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
+
 ## License
 
-MIT. The bundled FFmpeg (from the optional `ffmpeg-static` package) is licensed separately under
+[MIT](LICENSE). The bundled FFmpeg (from the optional `ffmpeg-static` package) is licensed separately under
 GPL-3.0.
