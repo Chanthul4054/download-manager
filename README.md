@@ -6,6 +6,8 @@
 [![release](https://img.shields.io/github/v/release/Chanthul4054/download-manager)](https://github.com/Chanthul4054/download-manager/releases/latest)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+<img src="assets/demo.gif" width="880" alt="Animation: a file's progress bar split across 8 connections; as each finishes it takes over half of the largest remaining piece until the download is done">
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Chanthul4054/download-manager/main/install.sh | sh
 ```
