@@ -1,0 +1,26 @@
+name: Bug report
+description: Something doesn't work
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. Include the URL type (HTTP, FTP, HLS, torrent, YouTube) if it matters.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: OpenDM version
+      placeholder: "2.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Logs or screenshots
+      description: Remove any private URLs, cookies or file names first.
