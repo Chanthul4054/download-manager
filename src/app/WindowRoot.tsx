@@ -2,6 +2,7 @@
 // and toasts, and shows a readable error instead of a blank window if something throws.
 import * as React from 'react';
 import { Toaster } from 'sonner';
+import { MotionConfig } from 'framer-motion';
 import { connectStore, loadState, useApp } from '@/stores/app';
 import { useAppearance } from '@/hooks/useAppearance';
 import { TooltipProvider } from '@/components/ui/overlay';
@@ -63,18 +64,20 @@ export function WindowRoot({ children }: { children: React.ReactNode }) {
   if (!ready) return null;
   return (
     <Boundary>
-      <TooltipProvider>
-        {children}
-        <ConfirmHost />
-        <Toaster
-          position="bottom-right"
-          offset={44}
-          toastOptions={{
-            className: '!bg-raised !text-fg !border-line !shadow-pop !rounded-lg !text-sm !py-2.5 !px-3.5 !font-sans',
-            duration: 2600,
-          }}
-        />
-      </TooltipProvider>
+      <MotionConfig reducedMotion="user">
+        <TooltipProvider>
+          {children}
+          <ConfirmHost />
+          <Toaster
+            position="bottom-right"
+            offset={44}
+            toastOptions={{
+              className: '!bg-raised !text-fg !border-line !shadow-pop !rounded-lg !text-sm !py-2.5 !px-3.5 !font-sans',
+              duration: 2600,
+            }}
+          />
+        </TooltipProvider>
+      </MotionConfig>
     </Boundary>
   );
 }

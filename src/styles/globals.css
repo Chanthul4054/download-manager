@@ -190,12 +190,11 @@
   ::-webkit-scrollbar-corner {
     background: transparent;
   }
+  /* Reduced motion keeps fades and colour (they explain state) but drops movement: no press scale,
+     and the popover/dialog entrances below fall back to a plain fade. */
   @media (prefers-reduced-motion: reduce) {
-    *,
-    ::before,
-    ::after {
-      animation-duration: 1ms !important;
-      transition-duration: 1ms !important;
+    :active {
+      scale: none !important;
     }
   }
 }
@@ -204,7 +203,16 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Indeterminate progress (size unknown). */
+/* ---- motion ------------------------------------------------------------------------------------
+   Crisp and fast: strong ease-out, everything under 200ms, exits quicker than entrances.
+   Keyboard-driven and high-frequency surfaces (page switches, list navigation, sidebar toggle)
+   deliberately don't animate. */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+/* Indeterminate progress (size unknown). Under reduced motion it breathes in place instead. */
 @keyframes odm-indeterminate {
   from {
     transform: translateX(-100%);
@@ -213,15 +221,31 @@
     transform: translateX(250%);
   }
 }
+@keyframes odm-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
 @utility animate-indeterminate {
-  animation: odm-indeterminate 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: odm-indeterminate 1.4s var(--ease-in-out) infinite;
+  @media (prefers-reduced-motion: reduce) {
+    width: 100%;
+    animation: odm-breathe 2s ease-in-out infinite;
+  }
 }
 
-/* Popovers and dialogs: short, opacity-led, no bounce. */
+/* Popovers scale from their trigger (Radix sets the origin); dialogs stay centred. The dialog keyframes
+   use `transform` only: the centring is Tailwind's separate `translate` property, which they stack on. */
 @keyframes odm-pop {
   from {
     opacity: 0;
-    transform: scale(0.97) translateY(-2px);
+    transform: scale(0.96);
+  }
+}
+@keyframes odm-pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
   }
 }
 @keyframes odm-fade {
@@ -229,19 +253,61 @@
     opacity: 0;
   }
 }
+@keyframes odm-fade-out {
+  to {
+    opacity: 0;
+  }
+}
 @keyframes odm-dialog {
   from {
     opacity: 0;
-    transform: translate(-50%, -48%) scale(0.98);
+    transform: translateY(6px) scale(0.97);
+  }
+}
+@keyframes odm-dialog-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
   }
 }
 @utility animate-pop {
-  animation: odm-pop 120ms cubic-bezier(0.2, 0, 0, 1);
+  animation: odm-pop 140ms var(--ease-out);
   transform-origin: var(--radix-popper-transform-origin, top);
+  &[data-state='closed'] {
+    animation: odm-pop-out 100ms var(--ease-out) forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    animation-name: odm-fade;
+    &[data-state='closed'] {
+      animation-name: odm-fade-out;
+    }
+  }
 }
 @utility animate-fade {
-  animation: odm-fade 140ms ease-out;
+  animation: odm-fade 140ms var(--ease-out);
+  &[data-state='closed'] {
+    animation: odm-fade-out 120ms var(--ease-out) forwards;
+  }
 }
 @utility animate-dialog {
-  animation: odm-dialog 160ms cubic-bezier(0.2, 0, 0, 1);
+  animation: odm-dialog 200ms var(--ease-out);
+  &[data-state='closed'] {
+    animation: odm-dialog-out 120ms var(--ease-out) forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    animation-name: odm-fade;
+    &[data-state='closed'] {
+      animation-name: odm-fade-out;
+    }
+  }
+}
+
+/* Press feedback for anything clickable. */
+@utility pressable {
+  transition-property: color, background-color, border-color, box-shadow, opacity, scale;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease-out);
+  &:active:not(:disabled) {
+    scale: 0.97;
+  }
 }
