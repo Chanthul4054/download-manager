@@ -24,7 +24,7 @@ export function Progress({ value, barClass = 'bg-accent', className, striped }: 
       {value == null ? (
         <div className={cn('absolute inset-y-0 w-2/5 rounded-full opacity-70 animate-indeterminate', barClass)} />
       ) : (
-        <div className={cn('h-full origin-left rounded-full transition-transform duration-500 ease-out will-change-transform', barClass, striped && 'opacity-60')} style={{ transform: `scaleX(${value / 100})` }} />
+        <div className={cn('h-full origin-left rounded-full transition-transform duration-500 ease-linear will-change-transform', barClass, striped && 'opacity-60')} style={{ transform: `scaleX(${value / 100})` }} />
       )}
     </div>
   );
