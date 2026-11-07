@@ -309,7 +309,7 @@ const Row = React.memo(function Row({ id, cols, widths, top, height, total }: { 
 });
 
 function RowActions({ it, running }: { it: DownloadItem; running: boolean }) {
-  const btn = 'grid size-6 place-items-center rounded-md text-fg-3 hover:bg-muted hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-ring/40 data-[state=open]:bg-muted';
+  const btn = 'grid size-6 place-items-center rounded-md text-fg-3 pressable hover:bg-muted hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-ring/40 data-[state=open]:bg-muted';
   return (
     <>
       {it.status === 'complete' ? (

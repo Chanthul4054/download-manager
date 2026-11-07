@@ -43,7 +43,7 @@ export function Switch({ checked, onChange, className, ...props }: Omit<React.Co
       className={cn('inline-flex h-[18px] w-[30px] shrink-0 items-center rounded-full border border-transparent bg-line-strong p-px transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/40 data-[state=checked]:bg-accent disabled:opacity-50', className)}
       {...props}
     >
-      <SwitchP.Thumb className="block size-[14px] rounded-full bg-white shadow-[0_1px_2px_rgb(0_0_0/0.25)] transition-transform duration-150 data-[state=checked]:translate-x-3" />
+      <SwitchP.Thumb className="block size-[14px] rounded-full bg-white shadow-[0_1px_2px_rgb(0_0_0/0.25)] transition-transform duration-150 ease-[var(--ease-out)] data-[state=checked]:translate-x-3" />
     </SwitchP.Root>
   );
 }
@@ -81,7 +81,7 @@ export function Select<T extends string | number>({ value, onChange, options, cl
       <SelectP.Trigger
         aria-label={ariaLabel}
         className={cn(
-          'inline-flex h-7 min-w-0 items-center justify-between gap-2 rounded-md border border-line-strong/80 bg-raised px-2 text-sm text-fg shadow-[0_1px_1px_rgb(0_0_0/0.04)] outline-none hover:bg-subtle focus-visible:ring-3 focus-visible:ring-ring/40 disabled:opacity-50 data-[placeholder]:text-fg-3',
+          'inline-flex h-7 min-w-0 items-center justify-between gap-2 rounded-md border border-line-strong/80 bg-raised px-2 text-sm text-fg shadow-[0_1px_1px_rgb(0_0_0/0.04)] outline-none pressable hover:bg-subtle focus-visible:ring-3 focus-visible:ring-ring/40 disabled:opacity-50 data-[placeholder]:text-fg-3',
           className,
         )}
       >
