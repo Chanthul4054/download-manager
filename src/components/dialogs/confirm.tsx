@@ -1,7 +1,7 @@
 // Promise-based confirm and prompt dialogs: `await confirm(...)` anywhere, one host renders them.
 import * as React from 'react';
 import { create } from 'zustand';
-import { Dialog } from '@/components/ui/overlay';
+import { Dialog, DialogClosing, useExitHold } from '@/components/ui/overlay';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { CheckField } from '@/components/ui/controls';
@@ -37,46 +37,51 @@ export function prompt(title: string, label: string, value = '', okLabel = 'Save
 }
 
 export function ConfirmHost() {
-  const req = useReq((s) => s.req);
+  const live = useReq((s) => s.req);
+  const [req, closing] = useExitHold(live);
   const [checked, setChecked] = React.useState(false);
   const [value, setValue] = React.useState('');
   React.useEffect(() => {
+    if (!live) return; // keep the closing dialog's state while it animates out
     setChecked(false);
-    if (req?.kind === 'prompt') setValue(req.value);
-  }, [req]);
+    if (live.kind === 'prompt') setValue(live.value);
+  }, [live]);
   if (!req) return null;
   const done = (ok: boolean) => {
+    if (closing) return;
     useReq.setState({ req: null });
     if (req.kind === 'confirm') req.resolve(ok ? { ok: true, checked } : null);
     else req.resolve(ok ? value : null);
   };
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && done(false)}
-      title={req.title}
-      size="sm"
-      onSubmit={() => done(true)}
-      footer={
-        <>
-          <Button onClick={() => done(false)}>Cancel</Button>
-          <Button variant={req.kind === 'confirm' && req.danger ? 'danger' : 'primary'} onClick={() => done(true)} autoFocus={req.kind === 'confirm'}>
-            {req.okLabel}
-          </Button>
-        </>
-      }
-    >
-      {req.kind === 'confirm' ? (
-        <div className="flex flex-col gap-3 text-sm text-fg-2">
-          {req.message && <div>{req.message}</div>}
-          {req.check && <CheckField label={req.check} checked={checked} onChange={setChecked} />}
-        </div>
-      ) : (
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-fg-2">{req.label}</label>
-          <Input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onFocus={(e) => e.target.select()} />
-        </div>
-      )}
-    </Dialog>
+    <DialogClosing.Provider value={closing}>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && done(false)}
+        title={req.title}
+        size="sm"
+        onSubmit={() => done(true)}
+        footer={
+          <>
+            <Button onClick={() => done(false)}>Cancel</Button>
+            <Button variant={req.kind === 'confirm' && req.danger ? 'danger' : 'primary'} onClick={() => done(true)} autoFocus={req.kind === 'confirm'}>
+              {req.okLabel}
+            </Button>
+          </>
+        }
+      >
+        {req.kind === 'confirm' ? (
+          <div className="flex flex-col gap-3 text-sm text-fg-2">
+            {req.message && <div>{req.message}</div>}
+            {req.check && <CheckField label={req.check} checked={checked} onChange={setChecked} />}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-fg-2">{req.label}</label>
+            <Input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onFocus={(e) => e.target.select()} />
+          </div>
+        )}
+      </Dialog>
+    </DialogClosing.Provider>
   );
 }

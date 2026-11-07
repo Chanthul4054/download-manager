@@ -1,4 +1,5 @@
 import { closeDialog, useUi } from '@/stores/ui';
+import { DialogClosing, useExitHold } from '@/components/ui/overlay';
 import { AddUrlDialog } from './AddUrlDialog';
 import { BatchDialog } from './BatchDialog';
 import { PropertiesDialog } from './PropertiesDialog';
@@ -8,8 +9,16 @@ import { HelpDialog, TipDialog } from './HelpDialog';
 
 /** Renders the one open main-window dialog. */
 export function DialogHost() {
-  const d = useUi((s) => s.dialog);
+  const [d, closing] = useExitHold(useUi((s) => s.dialog));
   if (!d) return null;
+  return (
+    <DialogClosing.Provider value={closing}>
+      <Current d={d} />
+    </DialogClosing.Provider>
+  );
+}
+
+function Current({ d }: { d: NonNullable<ReturnType<typeof useUi.getState>['dialog']> }) {
   const close = (open: boolean) => !open && closeDialog();
   switch (d.type) {
     case 'addUrl': return <AddUrlDialog url={d.url} onOpenChange={close} />;

@@ -23,11 +23,25 @@ export interface DialogProps {
   onSubmit?: () => void;
 }
 
+/** True while a host keeps an already-closed dialog mounted so its exit animation can play. */
+export const DialogClosing = React.createContext(false);
+
+/** Keeps the last non-null `value` for `ms` after it becomes null; `closing` is true meanwhile. */
+export function useExitHold<T>(value: T | null, ms = 130): [T | null, boolean] {
+  const [held, setHeld] = React.useState(value);
+  React.useEffect(() => {
+    if (value) return setHeld(value);
+    const t = setTimeout(() => setHeld(null), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return [value ?? held, !value && !!held];
+}
+
 const sizes = { sm: 'w-[min(26rem,calc(100vw-2rem))]', md: 'w-[min(34rem,calc(100vw-2rem))]', lg: 'w-[min(46rem,calc(100vw-2rem))]', xl: 'w-[min(60rem,calc(100vw-2rem))]' };
 
 export function Dialog({ open, onOpenChange, title, description, children, footer, footerStart, size = 'md', className, bodyClassName, onSubmit }: DialogProps) {
   return (
-    <DialogP.Root open={open} onOpenChange={onOpenChange}>
+    <DialogP.Root open={open && !React.useContext(DialogClosing)} onOpenChange={onOpenChange}>
       <DialogP.Portal>
         <DialogP.Overlay className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[1px] animate-fade dark:bg-black/50" />
         <DialogP.Content
@@ -46,7 +60,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
               <DialogP.Title className="text-lg font-semibold tracking-[-0.01em] text-fg">{title}</DialogP.Title>
               {description ? <DialogP.Description className="mt-0.5 text-sm text-fg-2">{description}</DialogP.Description> : <DialogP.Description className="sr-only">{typeof title === 'string' ? title : ''}</DialogP.Description>}
             </div>
-            <DialogP.Close className="-mr-1.5 grid size-6 place-items-center rounded-md text-fg-3 hover:bg-subtle hover:text-fg" aria-label="Close">
+            <DialogP.Close className="-mr-1.5 grid size-6 place-items-center rounded-md text-fg-3 pressable hover:bg-subtle hover:text-fg" aria-label="Close">
               <X className="size-4" />
             </DialogP.Close>
           </div>
@@ -77,7 +91,7 @@ export function Tooltip({ content, kbd, children, side = 'bottom' }: { content: 
     <TooltipP.Root>
       <TooltipP.Trigger asChild>{children}</TooltipP.Trigger>
       <TooltipP.Portal>
-        <TooltipP.Content side={side} sideOffset={6} className="z-50 flex max-w-72 items-center gap-2 rounded-md bg-fg px-2 py-1 text-xs text-bg shadow-pop animate-fade dark:bg-muted dark:text-fg">
+        <TooltipP.Content side={side} sideOffset={6} className="z-50 flex max-w-72 items-center gap-2 rounded-md bg-fg px-2 py-1 text-xs text-bg shadow-pop data-[state=delayed-open]:animate-fade dark:bg-muted dark:text-fg">
           {content}
           {kbd && <Kbd className="border-transparent bg-white/15 text-inherit">{kbd}</Kbd>}
         </TooltipP.Content>
@@ -111,7 +125,7 @@ export function Tabs<T extends string>({ value, onChange, tabs, className }: { v
           <TabsP.Trigger
             key={t.value}
             value={t.value}
-            className="inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-fg-2 outline-none hover:bg-subtle hover:text-fg focus-visible:ring-3 focus-visible:ring-ring/40 data-[state=active]:bg-muted data-[state=active]:text-fg"
+            className="inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-fg-2 outline-none pressable hover:bg-subtle hover:text-fg focus-visible:ring-3 focus-visible:ring-ring/40 data-[state=active]:bg-muted data-[state=active]:text-fg"
           >
             {t.label}
             {t.count != null && <span className="tnum text-xs text-fg-3">{t.count}</span>}
