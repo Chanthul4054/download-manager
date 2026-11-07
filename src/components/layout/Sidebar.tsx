@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { motion } from 'framer-motion';
 import { ChevronDown, Download, Film, Globe, History, Link2, ListOrdered, Magnet, PanelLeft, Plus, RefreshCw, Settings, Folder, type LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { invoke } from '@/services/ipc';
@@ -67,10 +66,10 @@ export function Sidebar() {
   );
 
   return (
-    <motion.aside
-      initial={false}
-      animate={{ width: collapsed ? '3.7rem' : '15.4rem' }}
-      transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+    // No width animation: it would re-lay out the whole list every frame, and the labels can't
+    // follow it anyway. Collapsing is instant, like Linear's.
+    <aside
+      style={{ width: collapsed ? '3.7rem' : '15.4rem' }}
       className="flex shrink-0 flex-col overflow-hidden border-r border-line bg-sidebar"
       aria-label="Navigation"
     >
@@ -141,7 +140,7 @@ export function Sidebar() {
           <NavItem icon={PanelLeft} label="Expand sidebar" collapsed onClick={() => saveSettings({ appearance: { showCategories: true } })} />
         )}
       </div>
-    </motion.aside>
+    </aside>
   );
 }
 
@@ -155,7 +154,7 @@ function NavItem({ icon: Icon, label, count, active, collapsed, dot, onClick, kb
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
       className={cn(
-        'group relative flex h-7 w-full shrink-0 items-center gap-2 rounded-md px-2 text-left text-sm text-fg-2 outline-none hover:bg-muted hover:text-fg focus-visible:ring-3 focus-visible:ring-ring/40',
+        'group relative flex h-7 w-full shrink-0 items-center gap-2 rounded-md px-2 text-left text-sm text-fg-2 outline-none pressable hover:bg-muted hover:text-fg focus-visible:ring-3 focus-visible:ring-ring/40',
         active && 'bg-muted font-medium text-fg',
         collapsed && 'justify-center px-0',
         depth && !collapsed && 'pl-2',
