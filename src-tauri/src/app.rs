@@ -54,7 +54,7 @@ const INVOKE: &[&str] = &[
     "dialog:folder", "dialog:file", "dialog:confirm",
     "win:open", "win:close", "win:resize", "win:setTitle", "win:showMain", "win:toggleDrop",
     "clip:urls", "clip:write", "util:batch", "util:openExternal", "util:openPath", "util:probe", "util:hlsVariants", "util:ffmpeg", "util:extensionDir", "util:ytdlp", "util:ytdlpInstall", "util:ytdlpInfo", "util:torrentFiles", "util:torrentFirewall",
-    "import", "export", "batch:clipboard", "power:run", "power:cancel", "app:quit",
+    "import", "export", "batch:clipboard", "power:run", "power:cancel", "app:quit", "app:menu",
     "grabber:list", "grabber:get", "grabber:new", "grabber:save", "grabber:delete", "grabber:run", "grabber:stop",
     "grabber:setChecked", "grabber:addToList", "grabber:open",
     "lg:state", "lg:add", "lg:confirm", "lg:remove", "lg:removeOffline", "lg:clear", "lg:enable", "lg:updatePackage", "lg:renameLink",
@@ -401,9 +401,9 @@ impl App {
         if transparent {
             tauri::window::Color(0, 0, 0, 0)
         } else if self.dark.get() {
-            tauri::window::Color(0x1b, 0x1d, 0x21, 255)
+            tauri::window::Color(0x12, 0x13, 0x16, 255)
         } else {
-            tauri::window::Color(0xf6, 0xf7, 0xf9, 255)
+            tauri::window::Color(0xff, 0xff, 0xff, 255)
         }
     }
 
@@ -465,7 +465,7 @@ impl App {
         let b = self.settings()["appearance"]["window"].clone();
         let width = js::num_or(js::get(&b, "width"), 1100.0);
         let height = js::num_or(js::get(&b, "height"), 680.0);
-        let menu = self.menu_template().ok();
+        let menu = if cfg!(target_os = "macos") { self.menu_template().ok() } else { None };
         let mut builder = WebviewWindowBuilder::new(&self.handle, "main", WebviewUrl::App("index.html?view=main".into()))
             .title("OpenDM")
             .inner_size(width, height)
@@ -1101,8 +1101,11 @@ impl App {
     }
 
     fn build_menu(&self) {
-        if let (Some(w), Ok(m)) = (self.main_window(), self.menu_template()) {
-            let _ = w.set_menu(m);
+        // Windows and Linux use the app's own menus in the UI; macOS keeps its system menu bar.
+        if cfg!(target_os = "macos") {
+            if let (Some(w), Ok(m)) = (self.main_window(), self.menu_template()) {
+                let _ = w.set_menu(m);
+            }
         }
         self.update_tray();
     }
@@ -1298,33 +1301,26 @@ impl App {
     }
 
     fn open_grabber(&self, project_id: Option<String>) {
-        let mut o = ViewOpts::new();
-        o.key = Some(format!("grabber:{}", project_id.clone().unwrap_or_else(|| "new".into())));
-        o.width = 980.0;
-        o.height = 680.0;
-        o.min_width = 760.0;
-        o.min_height = 480.0;
-        o.title = "Site Grabber".into();
-        o.maximizable = true;
-        let mut p = Map::new();
-        if let Some(id) = project_id {
-            p.insert("project".into(), json!(id));
-        }
-        self.open_view("grabber", p, o);
+        self.show_page("grabber", project_id.map(Value::String).unwrap_or(Value::Null), false);
     }
 
     fn open_link_grabber(&self, background: bool) {
-        let mut o = ViewOpts::new();
-        o.key = Some("linkgrabber".into());
-        o.width = 1080.0;
-        o.height = 660.0;
-        o.min_width = 760.0;
-        o.min_height = 420.0;
-        o.title = "LinkGrabber".into();
-        o.maximizable = true;
-        o.inactive = background;
-        o.background = background;
-        self.open_view("linkgrabber", Map::new(), o);
+        self.show_page("linkgrabber", Value::Null, background);
+    }
+
+    /// Shows a page of the main window. A window that is still being created reads it with `pending("nav")`.
+    fn show_page(&self, page: &str, arg: Value, background: bool) {
+        if self.main_window().is_none() {
+            if !background {
+                self.pending.borrow_mut().insert("nav".into(), json!([page, arg]));
+                self.create_main_window(true);
+            }
+            return;
+        }
+        if !background {
+            self.show_main();
+            self.send_to("main", "menu", vec![json!("nav"), json!(page), arg]);
+        }
     }
 
     fn message(&self, text: &str) {
@@ -1607,7 +1603,15 @@ impl App {
                 "items": m.list(),
                 "grabberPresets": file_presets(),
             }),
-            "pending" => self.pending.borrow().get(&js::str_of(&a(0))).cloned().unwrap_or(Value::Null),
+            "pending" => {
+                let key = js::str_of(&a(0));
+                let v = if key == "nav" { self.pending.borrow_mut().remove(&key) } else { self.pending.borrow().get(&key).cloned() };
+                v.unwrap_or(Value::Null)
+            }
+            "app:menu" => {
+                self.on_menu(&js::str_of(&a(0))).await;
+                Value::Null
+            }
 
             "dl:describe" => m.describe(&js::str_of(&a(0)), &a(1)).await,
             "dl:add" => {
