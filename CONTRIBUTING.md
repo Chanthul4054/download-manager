@@ -20,7 +20,8 @@ npm test    # unit and integration tests
 ```
 
 The [project structure](README.md#project-structure) section of the README says where things live.
-The UI in `src/renderer/` is plain HTML and JavaScript with no build step.
+The UI in `src/` is React and TypeScript, built with Vite (`npm run build` type-checks and bundles it into `build/`).
+`npm start` runs it with hot reload; every backend call goes through the typed channels in `src/services/ipc.ts`.
 
 ## Pull requests
 

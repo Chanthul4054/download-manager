@@ -103,7 +103,7 @@ are kept in `%APPDATA%\OpenDM` (`~/Library/Application Support/OpenDM` on macOS,
 
 ```sh
 npm install
-npm start          # tauri dev: builds the Rust app and opens it
+npm start          # tauri dev: starts Vite on :1420, builds the Rust app and opens it
 ```
 
 ### Browser extension when running from source
@@ -181,7 +181,12 @@ src-tauri/           the app (Rust)
   src/integration.rs local server for the browser extension
   tests/             integration tests against a local test server
   examples/          benchmark, bench server and icon generator
-src/renderer/        user interface (no framework); js/bridge.js connects it to the app
+src/                 user interface: React, TypeScript, Vite, Tailwind CSS
+  services/ipc.ts    typed bridge to the app (every channel and event)
+  stores/            app state (Zustand) kept in sync with the backend's events
+  pages/             main-window pages (Downloads, LinkGrabber, Site Grabber, Queues, Settings…)
+  windows/           small windows (progress, Download File Info, link list, drop target…)
+  components/        UI kit, layout, download list, dialogs, settings sections
 extension/           Chrome/Edge extension (Manifest V3)
 ```
 
