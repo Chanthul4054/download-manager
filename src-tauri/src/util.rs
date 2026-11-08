@@ -375,17 +375,22 @@ pub fn extract_urls(text: &str) -> Vec<String> {
 
 pub async fn write_json_atomic(file: &Path, data: &Value) -> Result<()> {
     let tmp = PathBuf::from(format!("{}.{}.tmp", file.display(), std::process::id()));
-    if let Some(d) = file.parent() {
-        tokio::fs::create_dir_all(d).await?;
-    }
-    tokio::fs::write(&tmp, serde_json::to_string_pretty(data)?).await?;
     // Settings hold site logins, proxy and 2Captcha keys; downloads hold cookies. Owner-only on
-    // Unix (on Windows the per-user AppData folder already is).
+    // Unix from the moment the file exists (on Windows the per-user AppData folder already is).
+    let mut dirs = tokio::fs::DirBuilder::new();
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
+        dirs.mode(0o700);
+        opts.mode(0o600);
     }
+    if let Some(d) = file.parent() {
+        dirs.recursive(true).create(d).await?;
+    }
+    let mut f = opts.open(&tmp).await?;
+    tokio::io::AsyncWriteExt::write_all(&mut f, serde_json::to_string_pretty(data)?.as_bytes()).await?;
+    drop(f);
     tokio::fs::rename(&tmp, file).await?;
     Ok(())
 }
