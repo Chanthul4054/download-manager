@@ -42,6 +42,10 @@ impl RateLimiter {
         self.last = now;
     }
 
+    pub fn limited(&self) -> bool {
+        self.rate > 0.0
+    }
+
     /// Returns ms to wait before `bytes` may be consumed (and consumes them).
     pub fn take(&mut self, bytes: usize) -> u64 {
         if self.rate == 0.0 {

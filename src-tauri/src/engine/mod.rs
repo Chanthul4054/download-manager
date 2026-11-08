@@ -153,3 +153,9 @@ pub async fn open(path: &str, flags: &str) -> Result<Fh> {
 /// Splits network data into pieces no bigger than Node's stream chunks, so segment bookkeeping
 /// advances in the same small steps as before.
 pub const MAX_PIECE: usize = 64 * 1024;
+
+/// Piece size when no speed limit applies. Every piece waits for a write on the blocking pool
+/// (~0.4 ms here), so 64 KB pieces held one connection to ~165 MB/s on loopback; 1 MB measured
+/// 230 MB/s on one connection and 579 MB/s on eight (bench/README.md). Limited downloads keep
+/// MAX_PIECE so the limiter still meters in small steps.
+pub const MAX_FAST_PIECE: usize = 1024 * 1024;

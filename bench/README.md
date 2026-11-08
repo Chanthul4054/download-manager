@@ -24,6 +24,28 @@ These are loopback numbers. They show whether the engine is the limit at interne
 extra connections help when a server caps each connection; they say nothing about how fast any
 particular internet host will be.
 
+## Rust engine: write piece size (2026-11-08, loopback, 5 runs)
+
+Machine: AMD Ryzen AI 9 HX 370, 31 GB, NVMe SSD, Windows 11, rustc 1.99.1. MB/s median (min..max).
+
+Every received piece waits for a write on the blocking pool, about 0.4 ms per round trip on the
+app's single-threaded executor. With 64 KB pieces that held one connection to ~165 MB/s, while
+the bench server delivers 635..715 MB/s to curl on one connection. Pieces are now up to 1 MB when
+no speed limit applies; limited downloads keep 64 KB pieces so the limiter meters in small steps.
+
+| Scenario | 64 KB pieces | 256 KB | 1 MB (shipped) |
+|---|---|---|---|
+| 20 × 1 MB, 8 conn | 147 (111..173) | 149 (100..226) | 120 (116..215) |
+| 256 MB, 1 conn | 167 (144..186) | 142 (132..157) | 206 (187..230) |
+| 256 MB, 8 conn | 343 (281..393) | 484 (187..578) | 708 (474..768) |
+| 8 × 64 MB, 8 conn | 888 (758..1025) | 1073 (1044..1192) | 2589 (2072..2956) |
+| 128 MB, no range support | 123 (113..131) | 154 (136..170) | 327 (254..557) |
+| 32 MB, 4 MB/s per conn, 8 conn | 27.8 | 27.8 | 27.9 |
+
+The 1 MB column is the final full run; a run made right after switching measured 230 / 579 / 958 /
+192 for the same rows, so expect run-to-run spread of this size on a laptop. Every file in every
+run passed the SHA-256 check. The 20 × 1 MB rows overlap: those files are one piece either way.
+
 ## Earlier results: the Electron/Node engine (2026-10-20, loopback, 5 runs)
 
 Machine: AMD Ryzen AI 9 HX 370, NVMe SSD, Windows 11, Node 24.20. Before = commit 4b0dd53 engine.
