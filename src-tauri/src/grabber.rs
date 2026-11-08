@@ -203,6 +203,8 @@ impl GrabberRun {
             };
             (urls("pages"), urls("files"))
         };
+        // Set here too, so a loaded project that is downloaded without exploring knows its site.
+        let host = u::hostname(&js::str_of(&project.borrow()["startUrl"]));
         let g = Rc::new(GrabberRun {
             me: RefCell::new(Weak::new()),
             p: project,
@@ -212,9 +214,9 @@ impl GrabberRun {
             seen_pages: RefCell::new(pages),
             seen_files: RefCell::new(files),
             dup_keys: RefCell::new(HashSet::new()),
-            start_host: RefCell::new(String::new()),
             start_dir: RefCell::new(String::new()),
-            main: RefCell::new(String::new()),
+            main: RefCell::new(main_domain(&host)),
+            start_host: RefCell::new(host),
             running: Cell::new(false),
             inflight: Cell::new(0),
             events: Emitter::default(),
@@ -231,8 +233,14 @@ impl GrabberRun {
         self.events.emit(GEvent::Update);
     }
 
-    fn auth(&self) -> Option<Auth> {
-        let a = pv(&self.p, "auth");
+    /// The project's login, for addresses on the project's own site only: pages link to other
+    /// hosts, which must not receive it.
+    fn auth_value(&self, url: &str) -> Value {
+        if self.is_this_site(&u::hostname(url)) { pv(&self.p, "auth") } else { Value::Null }
+    }
+
+    fn auth(&self, url: &str) -> Option<Auth> {
+        let a = self.auth_value(url);
         if a.is_object() {
             serde_json::from_value(a).ok()
         } else {
@@ -377,7 +385,7 @@ impl GrabberRun {
         self.with_page(&job.url, |r| r["status"] = json!("exploring"));
         self.update();
         let r: Result<()> = async {
-            let opts = ReqOpts { signal: Some(self.abort.borrow().clone()), auth: self.auth(), max_bytes: Some(8 * 1024 * 1024), timeout_sec: Some(30.0), ..Default::default() };
+            let opts = ReqOpts { signal: Some(self.abort.borrow().clone()), auth: self.auth(&job.url), max_bytes: Some(8 * 1024 * 1024), timeout_sec: Some(30.0), ..Default::default() };
             let f = self.net.fetch_buffer(&job.url, &opts).await?;
             self.stat_inc("explored");
             let ty = f.headers.get("content-type").cloned().unwrap_or_default();
@@ -441,7 +449,7 @@ impl GrabberRun {
         let max = js::num(&pv(&self.p, "maxSizeKB"));
         let hide = js::truthy(&pv(&self.p, "hideDuplicates"));
         if min > 0.0 || max > 0.0 || hide {
-            let opts = ReqOpts { signal: Some(self.abort.borrow().clone()), auth: self.auth(), timeout_sec: Some(20.0), ..Default::default() };
+            let opts = ReqOpts { signal: Some(self.abort.borrow().clone()), auth: self.auth(&link.url), timeout_sec: Some(20.0), ..Default::default() };
             match self.net.probe(&link.url, &opts).await {
                 Ok(pr) => {
                     f["size"] = json!(pr.size);
@@ -539,7 +547,7 @@ impl GrabberRun {
                     self.update();
                     let opts = json!({
                         "url": url, "saveDir": self.target_dir(&url), "category": pv(&self.p, "category"),
-                        "description": f["description"], "referer": f["page"], "auth": pv(&self.p, "auth"),
+                        "description": f["description"], "referer": f["page"], "auth": self.auth_value(&url),
                         "duplicateAction": if js::truthy(&pv(&self.p, "overwrite")) { "overwrite" } else { "number" },
                     });
                     let ok = match self.manager.add(&opts) {
@@ -603,7 +611,7 @@ impl GrabberRun {
             let url = js::str_of(&f["url"]);
             let opts = json!({
                 "url": url, "saveDir": self.target_dir(&url), "category": pv(&self.p, "category"), "description": f["description"],
-                "referer": f["page"], "auth": pv(&self.p, "auth"), "duplicateAction": "resume",
+                "referer": f["page"], "auth": self.auth_value(&url), "duplicateAction": "resume",
             });
             if let Ok(r) = self.manager.add(&opts) {
                 ids.push(js::str_of(&r["item"]["id"]));

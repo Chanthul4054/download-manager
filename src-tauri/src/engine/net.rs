@@ -302,16 +302,10 @@ impl NetContext {
                 pass: decode_uri_component(u.password().unwrap_or("")).unwrap_or_default(),
             });
         }
-        let host = host_with_port(&u);
-        let target = format!("{}{}", host, u.path());
         let logins = self.store.s(&["siteLogins"]);
         let list = logins.as_array().cloned().unwrap_or_default();
         list.iter()
-            .find(|l| {
-                let server = js::str_of(js::get(l, "server"));
-                let pat = SCHEME_PREFIX.replace(&server, "").into_owned();
-                wildcard_match(&pat, &host) || wildcard_match(&format!("{}*", pat), &target) || wildcard_match(&format!("*.{}", pat), &host)
-            })
+            .find(|l| login_matches(&js::str_of(js::get(l, "server")), &u))
             .map(|l| Auth { user: js::str_of(js::get(l, "user")), pass: js::str_of(js::get(l, "pass")) })
     }
 
@@ -463,6 +457,18 @@ impl NetContext {
 
 static SCHEME_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\w+://").unwrap());
 
+/// A saved login's server ("host[:port][/path]", optional scheme, `*`/`?` wildcards) covers the
+/// URL's host or a subdomain of it, and the path only at a "/" boundary — so "example.com" does
+/// not cover "example.com.evil.test".
+fn login_matches(server: &str, u: &url::Url) -> bool {
+    let pat = SCHEME_PREFIX.replace(server.trim(), "");
+    let (host_pat, path_pat) = pat.split_at(pat.find('/').unwrap_or(pat.len()));
+    let host = if host_pat.contains(':') { host_with_port(u) } else { u.host_str().unwrap_or("").to_string() };
+    let host_ok = !host_pat.is_empty() && (wildcard_match(host_pat, &host) || wildcard_match(&format!("*.{host_pat}"), &host));
+    let path_pat = path_pat.trim_end_matches('/');
+    host_ok && (path_pat.is_empty() || wildcard_match(path_pat, u.path()) || wildcard_match(&format!("{path_pat}/*"), u.path()))
+}
+
 /// `url.host` in JS: hostname plus a non-default port.
 pub fn host_with_port(u: &url::Url) -> String {
     let h = u.host_str().unwrap_or("");
@@ -555,6 +561,22 @@ mod tests {
         assert_eq!(parse_proxy_string("").kind, ProxyKind::Direct);
         let a = parse_proxy_string("PROXY alice:s%3Acret@proxy.corp:3128");
         assert_eq!((a.host.as_str(), a.port, a.user.as_str(), a.pass.as_str()), ("proxy.corp", 3128, "alice", "s:cret"));
+    }
+
+    #[test]
+    fn logins_match_host_and_path_boundaries() {
+        let m = |server: &str, url: &str| login_matches(server, &url::Url::parse(url).unwrap());
+        assert!(m("example.com", "https://example.com/x"));
+        assert!(m("https://example.com", "https://cdn.example.com/x"));
+        assert!(m("example.com", "https://example.com:8443/x"));
+        assert!(m("example.com/files", "https://example.com/files/a.zip"));
+        assert!(m("*.example.com", "https://a.example.com/"));
+        assert!(m("example.com:8443", "https://example.com:8443/"));
+        assert!(!m("example.com", "https://example.com.evil.test/x"));
+        assert!(!m("example.com", "https://notexample.com/"));
+        assert!(!m("example.com/files", "https://example.com/files-evil/a"));
+        assert!(!m("example.com:8443", "https://example.com/"));
+        assert!(!m("", "https://example.com/"));
     }
 
     #[test]

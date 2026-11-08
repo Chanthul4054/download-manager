@@ -1677,6 +1677,9 @@ impl App {
                 let mut ids = Vec::new();
                 for mut x in list {
                     x["start"] = json!(false);
+                    // The links window passes the page's cookies with every link; only links on
+                    // the page's own host may carry them.
+                    x["cookies"] = json!(u::cookies_for(&js::str_of(&x["url"]), &js::str_of(&x["referer"]), &js::str_of(&x["cookies"])));
                     if !js::truthy(js::get(&x, "duplicateAction")) {
                         x["duplicateAction"] = json!("number");
                     }
