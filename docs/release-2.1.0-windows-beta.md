@@ -14,7 +14,7 @@ Evidence labels used below:
 |---|---|
 | Version | **2.1.0** |
 | Target | Windows 10/11 x64, per-user NSIS installer |
-| Installer | `dist/OpenDM-Setup-2.1.0.exe` (28,624,201 bytes), **unsigned** |
+| Installer | `dist/OpenDM-Setup-2.1.0.exe` (28,621,765 bytes, SHA-256 `dc1d05b0…50e1fa`), **unsigned** |
 | Supported install paths | fresh install of 2.1.0; upgrade from the published **2.0.0** (Tauri); uninstall |
 | Not supported | a direct upgrade from the Electron **1.1.0**: uninstall 1.1.0 first (L) |
 
@@ -147,16 +147,19 @@ Build: `npm run dist`. This runs `verify-ffmpeg.js` (FFmpeg SHA-256 pin: ok), th
 
 | Field | Value |
 |---|---|
-| Source | `277fa2c2952c91472d2bd51e390d80ed46521b7b` + uncommitted changes, `git diff HEAD` SHA-256 `b2cc21ae41aa784772c622411c75ee9f802a9521ee889853fb8711fa50a7e8df` |
-| Built | 2026-11-08T17:00:42Z (time the bundler restored the exe; `cargo clean -p opendm` first) |
+| Source | the commit that adds this file's final version; `dirty: false`. Built from `dab8d00`; the only later change is this report, which is not part of the build |
+| Built | 2026-11-08T17:27:11Z (time the bundler restored the exe) |
 | Version / arch | 2.1.0 / win32 x64 (PE `0x8664`) |
 | Toolchain | rustc 1.99.1, Node 24.20.0, tauri-cli 2.12.4 |
-| `src-tauri/target/release/opendm.exe` | 25,287,680 bytes, SHA-256 `151353896f1e701f8dd6adc4bd7d61606a3e1143d557e653f96f51f47ac7ccb8` |
-| exe as packaged in the installer (`UNK→NSS` at offset 20,235,055) | SHA-256 `fdcd26ad819ee2d01df88cff5409cc031f17b064efd613b638421fe9a7684570` |
-| `dist/OpenDM-Setup-2.1.0.exe` | SHA-256 `b1d7b0e7cb3c8ebdf5cb053d40422d85f6c8afc0257dfcd59bd63600478e469a` |
+| `src-tauri/target/release/opendm.exe` | 25,287,680 bytes, SHA-256 `a86db773ddfa467f10845e0cc53c1c9a02c98f3cdb3fd34a0cd930ff4c4d112f` |
+| exe as packaged in the installer (`UNK→NSS` at offset 20,235,055) | SHA-256 `1df938d14fbf6160b6fbae54dbefe1fb919c31ed3bde771ae266f0e1e5bddc78` |
+| `dist/OpenDM-Setup-2.1.0.exe` | 28,621,765 bytes, SHA-256 `dc1d05b0af38c58701cba41b31e1f16b1182cd9a39362fc5e764eb1bda50e1fa` |
 
-`dist/SHA256SUMS-2.1.0.txt` holds the installer line. Once the source is committed, rebuild so
-the manifest records a clean commit (`dirty: false`).
+`dist/SHA256SUMS-2.1.0.txt` holds the installer line.
+
+This is the beta build. The installer tests in G ran on an earlier build of the same source
+(installer `b1d7b0e7…469a`). The Rust build is not byte-reproducible, so the hashes differ. The
+test package is re-staged with this build.
 
 Bundled resources:
 - FFmpeg (pinned hash, checked by `verify-ffmpeg.js`).
@@ -295,7 +298,7 @@ passed. Both failures are one harness bug, now fixed. The resume step was verifi
 
 | File | SHA-256 |
 |---|---|
-| `OpenDM-Setup-2.1.0.exe` | `b1d7b0e7…469a` (= E) |
+| `OpenDM-Setup-2.1.0.exe` | `dc1d05b0…50e1fa` (= E; the runs in G used `b1d7b0e7…469a`) |
 | `OpenDM-Setup-2.0.0-published.exe` | `ed4724e4…fc57` (GitHub v2.0.0 digest) |
 | `bench_server.exe` (rebuilt from `examples/bench_server.rs`) | `3ed7667f…1633` |
 | `expected.json` | `version`, `newSetup`, `new` (installer), `newExe` (= packaged exe hash from E), `published200` |
@@ -398,10 +401,29 @@ See F. All automated suites pass, except the two internet-only tests, which were
    current build.
 3. **Unsigned installer and exe** (K).
 4. **Edge** and the **"Download with OpenDM" context-menu item** are still not tested.
-5. **`cargo audit`** was not run (the tool is not installed).
+   - Edge is not installed on the build PC.
+   - To test it on a PC that has Edge, run:
+     `node scripts/qa/extension-test.mjs <opendm.exe> <bench_server.exe> <workdir> "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"`.
+5. **`cargo audit`** (cargo-audit, RustSec database of 1,422 advisories, 685 crates) [auto]:
+   - **1 vulnerability:** `ringbuf` 0.4.8, RUSTSEC-2026-0293, a double free in
+     `Consumer::skip`/`clear` when an element's `Drop` panics.
+     - It is pulled in by the vendored `librqbit-utp` (torrent uTP).
+     - It is **not reachable**: the only ring buffer is `SharedRb<Heap<u8>>` (`stream_tx.rs`),
+       and `u8` has no `Drop`.
+     - The fix (`ringbuf` 0.5.2) is a breaking API change in vendored code, so it is left for the
+       next librqbit update.
+   - 6 warnings:
+     - Unmaintained: `proc-macro-error`, `zbus_names`, `zvariant`, `zvariant_derive`.
+     - Unsound: `glib` 0.18.5. It is Linux-only and not in the Windows build.
+     - Yanked: `async-executor` 1.14.0.
+     - None is a known vulnerability in the Windows build.
 6. **The internet-only torrent tests** were not run.
-7. **The manifest records a dirty tree.** Rebuild from the commit before handing out the build.
-8. **A real Electron 1.1.0 → 2.1.0 migration** is not supported or tested (L).
+7. **The beta build was made from the commit**, but it was not itself run through the
+   installer test. An earlier build of the same source was. To close this, re-run the test in
+   `tedt` with the re-staged package.
+8. **Signing is not possible on this PC:** there is no code-signing certificate and no
+   `signtool`. No certificate was created (K).
+9. **A real Electron 1.1.0 → 2.1.0 migration** is not supported or tested (L).
 
 ## K. Unsigned installer and SmartScreen
 
