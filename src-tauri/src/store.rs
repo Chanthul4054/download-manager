@@ -106,8 +106,11 @@ impl Store {
     }
 
     pub fn save_after(self: &Rc<Self>, name: &'static str, delay_ms: u64) {
-        if let Some(t) = self.timers.borrow_mut().remove(name) {
-            t.abort();
+        // Keep a pending save rather than restarting it: requests arriving more often than the
+        // delay (several running downloads) would otherwise postpone the write forever. The data
+        // is read when the timer fires, so it is still the latest.
+        if self.timers.borrow().contains_key(name) {
+            return;
         }
         let me = self.clone();
         let h = tokio::task::spawn_local(async move {
