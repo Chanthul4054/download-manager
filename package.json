@@ -12,7 +12,7 @@
     "build": "tsc --noEmit && vite build",
     "start": "tauri dev",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "dist": "tauri build && node scripts/dist.js"
+    "dist": "node scripts/verify-ffmpeg.js && tauri build && node scripts/dist.js"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.3",
