@@ -110,6 +110,8 @@ fn js_runtime_args() -> Vec<String> {
 
 async fn run(bin: &str, args: &[String]) -> Result<String> {
     let mut all = js_runtime_args();
+    // A yt-dlp.conf in the current directory would otherwise be loaded (it can set --exec).
+    all.push("--ignore-config".into());
     all.extend(args.iter().cloned());
     let out = command(bin).args(&all).stdin(Stdio::null()).output().await?;
     if out.status.success() {
@@ -160,7 +162,7 @@ fn proxy_arg(settings: &Value) -> Vec<String> {
 pub async fn video_info(bin: &str, url: &str, settings: &Value) -> Result<Value> {
     let mut args: Vec<String> = vec!["-J".into(), "--no-playlist".into(), "--no-warnings".into()];
     args.extend(proxy_arg(settings));
-    args.push(url.into());
+    args.extend(["--".into(), url.into()]);
     let out = run(bin, &args).await?;
     let j: Value = serde_json::from_str(&out)?;
     let formats = j["formats"].as_array().cloned().unwrap_or_default();
@@ -274,7 +276,7 @@ impl YtDlpDownload {
         let q = it.ytdlp.as_ref().map(|y| js::str_of(js::get(y, "quality"))).filter(|q| !q.is_empty()).unwrap_or_else(|| "best".into());
         let mc = if it.max_connections != 0.0 { it.max_connections } else { js::num_or(&s["connection"]["maxConnections"], 4.0) };
         let mut a: Vec<String> = vec![
-            "--newline", "--no-playlist", "--no-mtime", "--continue", "--no-warnings", "--no-colors",
+            "--ignore-config", "--newline", "--no-playlist", "--no-mtime", "--continue", "--no-warnings", "--no-colors",
         ]
         .into_iter()
         .map(String::from)
@@ -314,7 +316,7 @@ impl YtDlpDownload {
             a.push("--limit-rate".into());
             a.push(format!("{}K", js::fmt_num(kb)));
         }
-        a.push(it.url.clone());
+        a.extend(["--".into(), it.url.clone()]);
         a
     }
 
