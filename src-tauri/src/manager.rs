@@ -90,6 +90,10 @@ impl DownloadManager {
             let mut d = d.borrow_mut();
             if ACTIVE.contains(&d.status.as_str()) {
                 d.status = "paused".into();
+                // The saved counter can be ahead of the saved (durable) segment positions.
+                if d.segments.is_some() {
+                    d.downloaded = d.segments_downloaded();
+                }
             }
         }
         let m = Rc::new(DownloadManager {
