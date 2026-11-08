@@ -409,7 +409,8 @@ pub async fn write_json_atomic(file: &Path, data: &Value) -> Result<()> {
 
 pub fn read_json(file: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(file).ok()?;
-    serde_json::from_str(&text).ok()
+    // Editors and Windows PowerShell 5 save UTF-8 with a byte-order mark, which serde rejects.
+    serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text)).ok()
 }
 
 pub async fn move_file(src: &str, dest: &str) -> Result<()> {

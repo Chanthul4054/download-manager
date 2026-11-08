@@ -52,6 +52,15 @@ pub struct Store {
 impl Store {
     pub fn new(dir: &Path) -> Rc<Store> {
         let file = |n: &str| dir.join(format!("{}.json", n));
+        // A data file that exists but cannot be read is copied aside first: the app starts with
+        // defaults for it, and its next save would otherwise destroy the user's list or settings.
+        let read_json = |f: &Path| {
+            let v = read_json(f);
+            if v.is_none() && f.is_file() {
+                let _ = std::fs::copy(f, f.with_extension(format!("json.unreadable-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"))));
+            }
+            v
+        };
         let settings = deep_merge(&default_settings(), &read_json(&file("settings")).unwrap_or(Value::Object(Default::default())));
         let categories = read_json(&file("categories")).filter(|v| !v.is_null()).unwrap_or_else(default_categories);
         let queues = read_json(&file("queues")).filter(|v| !v.is_null()).unwrap_or_else(default_queues);
@@ -170,5 +179,27 @@ impl Store {
     pub fn reset_settings(self: &Rc<Self>) {
         *self.settings.borrow_mut() = default_settings();
         self.save("settings");
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    #[test]
+    fn bom_files_load_and_unreadable_files_are_kept() {
+        let dir = std::env::temp_dir().join(format!("opendm-store-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // UTF-8 with a byte-order mark, as Notepad or Windows PowerShell 5 write it.
+        std::fs::write(dir.join("settings.json"), "\u{feff}{\"connection\":{\"maxConnections\":5}}").unwrap();
+        std::fs::write(dir.join("downloads.json"), "[{\"id\":\"a\",\"url\":\"http://h/a\"").unwrap(); // cut short
+        let s = Store::new(&dir);
+        assert_eq!(s.settings.borrow()["connection"]["maxConnections"], 5);
+        assert!(s.downloads.borrow().is_empty());
+        let kept: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("downloads.json.unreadable-")).collect();
+        assert_eq!(kept.len(), 1, "the unreadable list was not kept aside");
+        assert_eq!(std::fs::read_to_string(dir.join(&kept[0])).unwrap(), "[{\"id\":\"a\",\"url\":\"http://h/a\"");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
