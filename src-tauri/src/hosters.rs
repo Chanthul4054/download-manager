@@ -73,6 +73,8 @@ fn base58(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+const PASTE_MAX: u64 = 4 * 1024 * 1024;
+
 /// Decrypts a PrivateBin v2 paste: PBKDF2-SHA256 key, AES-GCM with the JSON-encoded parameters
 /// as associated data, optionally raw-deflated. Returns the paste's text.
 pub fn decrypt_paste(paste: &Value, key: &[u8]) -> Result<String> {
@@ -81,13 +83,17 @@ pub fn decrypt_paste(paste: &Value, key: &[u8]) -> Result<String> {
     let spec = if adata[0].is_array() { &adata[0] } else { adata };
     let b64 = |v: &Value| base64::engine::general_purpose::STANDARD.decode(v.as_str().unwrap_or("")).map_err(|_| bad());
     let (iv, salt, ct) = (b64(&spec[0])?, b64(&spec[1])?, b64(&paste["ct"])?);
-    let iter = spec[2].as_u64().ok_or_else(bad)? as u32;
+    let iter = spec[2].as_u64().ok_or_else(bad)?;
+    // PrivateBin uses 100 000; the server picks it, so a huge count would hang the app.
+    if iter == 0 || iter > 1_000_000 {
+        return Err(Error::new("Unsupported paste encryption"));
+    }
     if spec[5] != "aes" || spec[6] != "gcm" || spec[3] != 256 || spec[4] != 128 || iv.len() != 16 {
         return Err(Error::new("Unsupported paste encryption"));
     }
     // shortcut: password-protected pastes are not supported (the password is appended to the key).
     let mut derived = [0u8; 32];
-    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(key, &salt, iter, &mut derived);
+    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(key, &salt, iter as u32, &mut derived);
     let aad = serde_json::to_string(adata).map_err(|_| bad())?;
     let cipher = AesGcm::<Aes256, aes_gcm::aead::consts::U16>::new((&derived).into());
     let plain = cipher
@@ -95,7 +101,10 @@ pub fn decrypt_paste(paste: &Value, key: &[u8]) -> Result<String> {
         .map_err(|_| Error::new("Paste key does not fit (password-protected?)"))?;
     let plain = if spec[7] == "zlib" {
         let mut s = Vec::new();
-        std::io::Read::read_to_end(&mut flate2::read::DeflateDecoder::new(&plain[..]), &mut s).map_err(|_| bad())?;
+        std::io::Read::read_to_end(&mut std::io::Read::take(flate2::read::DeflateDecoder::new(&plain[..]), PASTE_MAX + 1), &mut s).map_err(|_| bad())?;
+        if s.len() as u64 > PASTE_MAX {
+            return Err(Error::new("Paste is too large"));
+        }
         s
     } else {
         plain
@@ -114,7 +123,8 @@ pub async fn fetch_paste(net: &NetContext, url: &str, opts: &ReqOpts) -> Result<
     if v["status"].as_i64().unwrap_or(0) != 0 {
         return Err(Error::new(format!("Paste: {}", v["message"].as_str().unwrap_or("not found"))));
     }
-    decrypt_paste(&v, &key)
+    // The key derivation takes a moment; keep it off the app's core thread.
+    tokio::task::spawn_blocking(move || decrypt_paste(&v, &key)).await.map_err(|e| Error::new(e.to_string()))?
 }
 
 /// Turns a fuckingfast.co file page into its direct download address.
@@ -194,5 +204,8 @@ mod tests {
         let text = decrypt_paste(&paste, &key).unwrap();
         assert_eq!(crate::util::extract_urls(&text).len(), 2);
         assert!(decrypt_paste(&paste, &[8u8; 32]).is_err());
+        let mut slow = paste.clone();
+        slow["adata"][0][2] = serde_json::json!(4_000_000_000u64);
+        assert_eq!(decrypt_paste(&slow, &key).unwrap_err().message, "Unsupported paste encryption");
     }
 }

@@ -161,6 +161,9 @@ pub struct HlsDownload {
     finished: Cell<bool>,
 }
 
+const PLAYLIST_MAX: usize = 16 * 1024 * 1024;
+const SEGMENT_MAX: usize = 128 * 1024 * 1024;
+
 fn hls_get(item: &ItemRef, key: &str) -> Value {
     item.borrow().hls.as_ref().map(|h| js::get(h, key).clone()).unwrap_or(Value::Null)
 }
@@ -209,25 +212,26 @@ impl HlsDownload {
         h
     }
 
-    async fn fetch(&self, url: &str, extra: &[(String, String)]) -> Result<super::net::Fetched> {
+    /// Playlists and keys; `max` bytes at most.
+    async fn fetch(&self, url: &str, extra: &[(String, String)], max: usize) -> Result<super::net::Fetched> {
         let mut headers = self.headers(url);
         for (k, v) in extra {
             set_header(&mut headers, k, v);
         }
-        let opts = ReqOpts { headers, signal: Some(self.abort.clone()), max_bytes: Some(512 * 1024 * 1024), ..Default::default() };
+        let opts = ReqOpts { headers, signal: Some(self.abort.clone()), max_bytes: Some(max), ..Default::default() };
         self.ctx.net.fetch_buffer(url, &opts).await
     }
 
     async fn resolve_playlist(&self) -> Result<Playlist> {
         let media = hls_get(&self.item, "mediaUrl");
         let mut url = if js::truthy(&media) { js::str_of(&media) } else { self.item.borrow().url.clone() };
-        let f = self.fetch(&url, &[]).await?;
+        let f = self.fetch(&url, &[], PLAYLIST_MAX).await?;
         let mut pl = parse_playlist(&String::from_utf8_lossy(&f.body), &f.url)?;
         if let Some(variants) = &pl.variants {
             let want = js::str_of(&hls_get(&self.item, "variant"));
             let v = variants.iter().find(|x| x.uri == want).unwrap_or(&variants[0]);
             url = v.uri.clone();
-            let f = self.fetch(&url, &[]).await?;
+            let f = self.fetch(&url, &[], PLAYLIST_MAX).await?;
             pl = parse_playlist(&String::from_utf8_lossy(&f.body), &f.url)?;
         }
         hls_set(&self.item, "mediaUrl", Value::String(url));
@@ -311,7 +315,7 @@ impl HlsDownload {
         }
         let uri = k.uri.clone().unwrap_or_default();
         if !self.keys.borrow().contains_key(&uri) {
-            let body = self.fetch(&uri, &[]).await?.body;
+            let body = self.fetch(&uri, &[], 64).await?.body;
             self.keys.borrow_mut().insert(uri.clone(), body);
         }
         let iv = match &k.iv {
@@ -366,6 +370,11 @@ impl HlsDownload {
                         sleep_ms(wait).await;
                     }
                     data.extend_from_slice(&c);
+                    // Segments are held in memory to decrypt; a server must not grow one forever.
+                    if data.len() > SEGMENT_MAX {
+                        res.destroy();
+                        return Err(Error::new("HLS segment is too large"));
+                    }
                     self.meter.borrow_mut().add(c.len() as u64);
                     self.ctx.on_bytes(c.len() as u64);
                     let cur = self.active.borrow().iter().find(|x| x.0 == i).map(|x| x.1).unwrap_or(0);
@@ -420,7 +429,7 @@ impl HlsDownload {
                 }
                 None => vec![],
             };
-            out.write_all(&self.fetch(&map.uri, &extra).await?.body).await?;
+            out.write_all(&self.fetch(&map.uri, &extra, SEGMENT_MAX).await?.body).await?;
         }
         for i in 0..pl.segments.len() {
             let data = tokio::fs::read(std::path::Path::new(&self.seg_dir()).join(format!("{}.seg", i))).await?;
