@@ -52,15 +52,31 @@ export default function ProgressWindow() {
     if (item) void invoke('win:setTitle', `${size ? Math.floor(pct) + '% ' : ''}${item.fileName}`);
   }, [item?.fileName, Math.floor(pct), !!size]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Details only when there is something in them: live connections or a map of downloaded parts.
+  const conns = stats?.connections?.length || 0;
+  const hasDetails = !!stats && (conns > 0 || !!stats.hlsSegments?.total || (!!stats.size && !!stats.segments?.length));
+  const showDetails = details && hasDetails;
+
+  // Fit the window's height to the status tab, so hiding details leaves no empty space.
+  const content = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const el = content.current;
+    const body = el?.parentElement;
+    if (!el || !body || tab !== 'status' || !stats) return;
+    const pad = parseFloat(getComputedStyle(body).paddingTop) + parseFloat(getComputedStyle(body).paddingBottom);
+    const want = Math.min(screen.availHeight * 0.9, Math.max(300, window.innerHeight - body.clientHeight + el.offsetHeight + pad));
+    if (Math.abs(want - window.innerHeight) > 2) void invoke('win:resize', window.innerWidth, want);
+  }, [tab, showDetails, Math.min(conns, 6), !!stats]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!item) return null;
   const downloading = item.status === 'downloading';
   const statusText = running ? item.statusText || 'Receiving data…' : item.status === 'error' ? 'Error: ' + (item.error || '') : item.status === 'complete' ? 'Complete' : 'Paused';
 
   return (
     <WindowShell
-      className="flex flex-col gap-4"
       footerStart={
-        tab === 'status' && (
+        tab === 'status' &&
+        hasDetails && (
           <Button variant="ghost" onClick={() => setDetails(!details)}>
             {details ? <ChevronUp /> : <ChevronDown />}
             {details ? 'Hide details' : 'Show details'}
@@ -84,6 +100,7 @@ export default function ProgressWindow() {
         </>
       }
     >
+      <div ref={content} className="flex flex-col gap-4">
       <div className="flex items-center gap-3">
         <FileIcon type={typeOfItem(item)} size="lg" />
         <div className="min-w-0 flex-1">
@@ -122,11 +139,12 @@ export default function ProgressWindow() {
             ]}
           />
           <Progress value={size || stats.hlsSegments ? Math.min(100, pct) : downloading ? null : 0} className="h-2" />
-          {details && <Details stats={stats} downloading={downloading} />}
+          {showDetails && <Details stats={stats} downloading={downloading} />}
         </>
       )}
       {tab === 'limiter' && full && <Limiter item={full} />}
       {tab === 'complete' && full && <Completion item={full} />}
+      </div>
     </WindowShell>
   );
 }
