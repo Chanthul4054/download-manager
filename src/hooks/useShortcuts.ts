@@ -28,7 +28,7 @@ export function useShortcuts() {
       if (mod && (k === '=' || k === '+')) return run(() => runMenu('font:larger'));
       if (mod && k === '-') return run(() => runMenu('font:smaller'));
       if (mod && k === '0') return run(() => runMenu('font:reset'));
-      if (mod && e.shiftKey && k === 'i') return run(() => runMenu('devtools'));
+      if (import.meta.env.DEV && mod && e.shiftKey && k === 'i') return run(() => runMenu('devtools'));
       if (mod && !typing && /^[1-8]$/.test(e.key)) {
         const pages = ['downloads', 'video', 'torrents', 'history', 'linkgrabber', 'grabber', 'queues', 'settings'] as const;
         return run(() => useUi.setState({ page: pages[Number(e.key) - 1] }));
