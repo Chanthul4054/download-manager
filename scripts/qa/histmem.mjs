@@ -1,0 +1,20 @@
+import { launch, sleep, memoryMB } from './cdp.mjs';
+import { execSync } from 'node:child_process';
+const [exe, data] = process.argv.slice(2);
+const app = await launch(exe, data);
+const { c } = app;
+await c.send('Performance.enable');
+const m = async (label) => { await c.send('HeapProfiler.collectGarbage'); await sleep(1500); const x = Object.fromEntries((await c.send('Performance.getMetrics')).result.metrics.filter(k => ['Nodes','JSHeapUsedSize','LayoutObjects'].includes(k.name)).map(k => [k.name, k.name==='JSHeapUsedSize'? Math.round(k.value/1048576) : k.value])); console.log(label, JSON.stringify({ ...x, ...memoryMB(app.child.pid) })); };
+await m('downloads page');
+await c.evaluate(`(async () => { [...document.querySelectorAll('nav button, nav a')].find(b => b.textContent.trim().startsWith('History')).click(); await new Promise(r => setTimeout(r, 500));
+  const sc = [...document.querySelectorAll('.overflow-y-auto')].find(e => e.querySelector('[data-row]'));
+  for (let i = 0; i < 400 && document.querySelectorAll('[data-row]').length < 5000; i++) { sc.scrollTop = sc.scrollHeight; await new Promise(r => setTimeout(r, 30)); }
+  sc.scrollTop = 0; })()`);
+await m('history, all 5000 mounted');
+await c.evaluate(`(() => { const s = document.createElement('style'); s.textContent = '*{backdrop-filter:none!important}'; document.head.append(s); })()`);
+await m('  + backdrop-filter off');
+await c.evaluate(`(() => { const s = document.createElement('style'); s.textContent = '[data-row] [data-action]{display:none!important}'; document.head.append(s); })()`);
+await m('  + row action buttons hidden');
+await c.evaluate(`(() => { const s = document.createElement('style'); s.textContent = '[data-row] svg{display:none!important}'; document.head.append(s); })()`);
+await m('  + row icons hidden');
+execSync(`taskkill /F /T /PID ${app.child.pid}`);
