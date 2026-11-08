@@ -399,7 +399,11 @@ pub async fn write_json_atomic(file: &Path, data: &Value) -> Result<()> {
         return Err(e.into());
     }
     drop(f);
-    tokio::fs::rename(&tmp, file).await?;
+    if let Err(e) = tokio::fs::rename(&tmp, file).await {
+        // The old file stays as it was; do not leave a temp file behind for every failed save.
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.into());
+    }
     Ok(())
 }
 
