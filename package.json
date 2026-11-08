@@ -8,17 +8,40 @@
   "repository": "https://github.com/Chanthul4054/download-manager",
   "private": true,
   "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
     "start": "tauri dev",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "dist": "tauri build && node scripts/dist.js"
+    "dist": "node scripts/verify-ffmpeg.js && tauri build && node scripts/dist.js"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.12.4"
+    "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/cli": "2.12.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vite": "8.3.4"
   },
   "optionalDependencies": {
     "ffmpeg-static": "5.3.0"
   },
   "allowScripts": {
     "ffmpeg-static@5.3.0": true
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@tauri-apps/api": "2.12.4",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "framer-motion": "14.3.0",
+    "lucide-react": "1.59.0",
+    "radix-ui": "1.8.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "sonner": "2.0.8",
+    "tailwind-merge": "3.7.0",
+    "zustand": "5.0.15"
   }
 }

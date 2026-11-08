@@ -137,3 +137,29 @@ fn merge_and_rename_keep_links_in_a_user_package() {
         env.mgr.dispose();
     });
 }
+
+#[test]
+fn deep_analysis_keeps_page_cookies_off_the_host_a_link_redirects_to() {
+    let cookies = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = cookies.clone();
+    let other = TestServer::start(Arc::new(move |req: &Req| {
+        seen.lock().unwrap().push(req.header("cookie").unwrap_or("").to_string());
+        match req.path() {
+            "/page.html" => Resp::new(200, r#"<a href="/f/a.zip">A</a>"#).header("Content-Type", "text/html"),
+            _ => Resp::new(200, vec![0u8; 10]).header("Content-Type", "application/octet-stream"),
+        }
+    }));
+    let target = format!("{}/page.html", other.base.replace("127.0.0.1", "localhost"));
+    let srv = TestServer::start(Arc::new(move |_: &Req| Resp::new(302, "").header("Location", &target)));
+    run(async move {
+        let (env, lg) = lg_setup();
+        let b = &srv.base;
+        lg.add(&json!({ "links": [{ "url": format!("{b}/go") }], "referer": format!("{b}/list"), "cookies": "sid=DUMMY", "deep": true }));
+        idle(&lg).await;
+        assert!(packages(&env).iter().flat_map(|p| &p.links).any(|l| l.url.ends_with("/f/a.zip")), "page was not crawled");
+        let got = cookies.lock().unwrap();
+        assert!(!got.is_empty() && got.iter().all(|c| !c.contains("DUMMY")), "{got:?}");
+        lg.dispose();
+        env.mgr.dispose();
+    });
+}

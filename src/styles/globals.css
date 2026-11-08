@@ -1,0 +1,313 @@
+@import '@fontsource-variable/inter';
+@import 'tailwindcss';
+
+/* ---- OpenDM design tokens ------------------------------------------------------------------------
+   One teal accent (OpenDM's colour since 1.0) on cool neutrals. Status colours are reserved for
+   download state so they always mean the same thing. The whole UI is sized in rem off the root font
+   size, so Settings → Appearance → Font size scales everything together (13px = 100%). */
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+:root {
+  --bg: #ffffff;
+  --sidebar: #f6f6f7;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --subtle: #f3f4f5;
+  --muted: #ebecee;
+  --line: #e7e8eb;
+  --line-strong: #d5d7dc;
+  --fg: #17181b;
+  --fg-2: #575b63;
+  --fg-3: #8a8e96;
+  --accent: #0d8a72;
+  --accent-hover: #0a7662;
+  --accent-soft: #e3f3ef;
+  --accent-fg: #ffffff;
+  --selected: #e8f4f1;
+  --ok: #2b9455;
+  --warn: #c27c00;
+  --danger: #d23c3c;
+  --info: #2f6fe0;
+  --violet: #7656e8;
+  --ok-soft: #e6f4ec;
+  --warn-soft: #fbf1df;
+  --danger-soft: #fbe9e9;
+  --info-soft: #e7eefc;
+  --violet-soft: #efebfd;
+  --ring: color-mix(in oklab, var(--accent) 55%, transparent);
+  --shadow-pop: 0 0 0 1px rgb(15 17 20 / 0.06), 0 6px 16px -4px rgb(15 17 20 / 0.12), 0 14px 40px -8px rgb(15 17 20 / 0.12);
+  --shadow-dialog: 0 0 0 1px rgb(15 17 20 / 0.06), 0 24px 64px -12px rgb(15 17 20 / 0.28);
+  --seg-done: var(--accent);
+  --seg-start: #e2557f;
+  --seg-todo: var(--muted);
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --bg: #121316;
+  --sidebar: #0d0e10;
+  --surface: #121316;
+  --raised: #1a1b1f;
+  --subtle: #1b1c20;
+  --muted: #24262b;
+  --line: #24262a;
+  --line-strong: #33363c;
+  --fg: #ecedef;
+  --fg-2: #a3a7ae;
+  --fg-3: #6e727a;
+  --accent: #2bbf9f;
+  --accent-hover: #43d0b1;
+  --accent-soft: rgb(43 191 159 / 0.13);
+  --accent-fg: #04130f;
+  --selected: color-mix(in srgb, #2bbf9f 10%, #121316); /* opaque, so sticky row parts can share it */
+  --ok: #4cc17a;
+  --warn: #e6a43a;
+  --danger: #f06a6a;
+  --info: #6b9cff;
+  --violet: #a28bff;
+  --ok-soft: rgb(76 193 122 / 0.13);
+  --warn-soft: rgb(230 164 58 / 0.13);
+  --danger-soft: rgb(240 106 106 / 0.13);
+  --info-soft: rgb(107 156 255 / 0.13);
+  --violet-soft: rgb(162 139 255 / 0.14);
+  --shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.06), 0 8px 24px -4px rgb(0 0 0 / 0.5);
+  --shadow-dialog: 0 0 0 1px rgb(255 255 255 / 0.07), 0 24px 64px -12px rgb(0 0 0 / 0.7);
+  --seg-start: #f07aa6;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: 'Inter Variable', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Consolas, monospace;
+
+  /* 13px root: 1 spacing unit = 4px, text-base = 13px. */
+  --spacing: 0.3077rem;
+  --text-2xs: 0.769rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.846rem;
+  --text-xs--line-height: 1.154rem;
+  --text-sm: 0.923rem;
+  --text-sm--line-height: 1.308rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.462rem;
+  --text-lg: 1.154rem;
+  --text-lg--line-height: 1.615rem;
+  --text-xl: 1.385rem;
+  --text-xl--line-height: 1.846rem;
+  --text-2xl: 1.692rem;
+  --text-2xl--line-height: 2.154rem;
+
+  --radius-sm: 0.308rem;
+  --radius-md: 0.462rem;
+  --radius-lg: 0.615rem;
+  --radius-xl: 0.846rem;
+
+  --color-bg: var(--bg);
+  --color-sidebar: var(--sidebar);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-subtle: var(--subtle);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-fg: var(--accent-fg);
+  --color-selected: var(--selected);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --color-violet: var(--violet);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger-soft: var(--danger-soft);
+  --color-info-soft: var(--info-soft);
+  --color-violet-soft: var(--violet-soft);
+  --color-ring: var(--ring);
+  --shadow-pop: var(--shadow-pop);
+  --shadow-dialog: var(--shadow-dialog);
+}
+
+@layer base {
+  html {
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-bg text-fg font-sans text-base;
+    font-feature-settings: 'cv11', 'ss03';
+    overflow: hidden;
+    user-select: none;
+    cursor: default;
+  }
+  /* The floating drop target window is see-through around its rounded tile. */
+  html.transparent-window,
+  html.transparent-window body {
+    background: transparent;
+  }
+  *,
+  ::before,
+  ::after {
+    border-color: var(--line);
+  }
+  input,
+  textarea,
+  [contenteditable] {
+    user-select: text;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--fg-3) 35%, transparent);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--fg-3) 60%, transparent);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  /* Reduced motion keeps fades and colour (they explain state) but drops movement: no press scale,
+     and the popover/dialog entrances below fall back to a plain fade. */
+  @media (prefers-reduced-motion: reduce) {
+    :active {
+      scale: none !important;
+    }
+  }
+}
+
+@utility tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- motion ------------------------------------------------------------------------------------
+   Crisp and fast: strong ease-out, everything under 200ms, exits quicker than entrances.
+   Keyboard-driven and high-frequency surfaces (page switches, list navigation, sidebar toggle)
+   deliberately don't animate. */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+/* Indeterminate progress (size unknown). Under reduced motion it breathes in place instead. */
+@keyframes odm-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+@keyframes odm-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+@utility animate-indeterminate {
+  animation: odm-indeterminate 1.4s var(--ease-in-out) infinite;
+  @media (prefers-reduced-motion: reduce) {
+    width: 100%;
+    animation: odm-breathe 2s ease-in-out infinite;
+  }
+}
+
+/* Popovers scale from their trigger (Radix sets the origin); dialogs stay centred. The dialog keyframes
+   use `transform` only: the centring is Tailwind's separate `translate` property, which they stack on. */
+@keyframes odm-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+@keyframes odm-pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes odm-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes odm-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes odm-dialog {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+}
+@keyframes odm-dialog-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+@utility animate-pop {
+  animation: odm-pop 140ms var(--ease-out);
+  transform-origin: var(--radix-popper-transform-origin, top);
+  &[data-state='closed'] {
+    animation: odm-pop-out 100ms var(--ease-out) forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    animation-name: odm-fade;
+    &[data-state='closed'] {
+      animation-name: odm-fade-out;
+    }
+  }
+}
+@utility animate-fade {
+  animation: odm-fade 140ms var(--ease-out);
+  &[data-state='closed'] {
+    animation: odm-fade-out 120ms var(--ease-out) forwards;
+  }
+}
+@utility animate-dialog {
+  animation: odm-dialog 200ms var(--ease-out);
+  &[data-state='closed'] {
+    animation: odm-dialog-out 120ms var(--ease-out) forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    animation-name: odm-fade;
+    &[data-state='closed'] {
+      animation-name: odm-fade-out;
+    }
+  }
+}
+
+/* Press feedback for anything clickable. */
+@utility pressable {
+  transition-property: color, background-color, border-color, box-shadow, opacity, scale;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease-out);
+  &:active:not(:disabled) {
+    scale: 0.97;
+  }
+}

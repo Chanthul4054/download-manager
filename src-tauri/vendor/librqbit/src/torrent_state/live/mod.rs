@@ -2045,7 +2045,8 @@ impl PeerHandler {
             .div_ceil(CHUNK_SIZE as u64)
             .try_into()?;
 
-        if piece_id as usize > total_pieces {
+        // OpenDM: was `>`, which let piece == total_pieces through to a panicking slice.
+        if piece_id as usize >= total_pieces {
             bail!("piece out of bounds")
         }
 

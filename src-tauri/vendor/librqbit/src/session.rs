@@ -730,6 +730,9 @@ impl Session {
 
                 builder
                     .user_agent(&client_name_and_version)
+                    // OpenDM: a tracker that never finishes its reply must not hold the announce.
+                    .connect_timeout(std::time::Duration::from_secs(20))
+                    .timeout(std::time::Duration::from_secs(60))
                     .build()
                     .context("error building HTTP(S) client")?
             };

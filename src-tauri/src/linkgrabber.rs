@@ -571,16 +571,23 @@ impl LinkGrabber {
     /// Replaces a web page with the files it links to. Returns true if any were found.
     async fn crawl(&self, id: &str, page_url: &str) -> Result<bool> {
         let Some(link) = self.with_link(id, |l| l.clone()) else { return Ok(false) };
+        // `cookies` belong to `jar`'s host. page_url can be where the link redirected to, and each
+        // response can land on another host again, so they are re-scoped before every request.
+        let mut jar = link.url.clone();
+        let mut cookies = u::cookies_for(page_url, &jar, &link.cookies);
         let mut o = ReqOpts { auth: link.auth.clone(), max_bytes: Some(4 * 1024 * 1024), timeout_sec: Some(20.0), ..Default::default() };
         if !link.referer.is_empty() {
             o = o.header("Referer", &link.referer);
         }
-        if !link.cookies.is_empty() {
-            o = o.header("Cookie", &link.cookies);
+        if !cookies.is_empty() {
+            o = o.header("Cookie", &cookies);
         }
         let mut f = self.net.fetch_buffer(page_url, &o).await?;
+        let at = |f: &crate::engine::net::Fetched, asked: &str| if f.url.is_empty() { asked.to_string() } else { f.url.clone() };
+        let landed = at(&f, page_url);
+        cookies = captcha::merge_cookies(&u::cookies_for(&landed, &jar, &cookies), f.headers.get("set-cookie").map(|s| s.as_str()));
+        jar = landed;
         let mut html = String::from_utf8_lossy(&f.body).into_owned();
-        let mut cookies = link.cookies.clone();
         // A captcha guards the real page: solve it and look inside the page it leads to.
         if let Some(c) = captcha::detect(&html) {
             let key = js::str_of(js::get(&self.settings(), "captchaApiKey")).trim().to_string();
@@ -592,13 +599,19 @@ impl LinkGrabber {
                 l.error = format!("Solving {}…", c.label());
             });
             self.touch();
-            let token = captcha::solve(&self.net, &key, &c, page_url).await?;
-            let form = captcha::answer_form(&html, page_url, &c, &token);
+            let page = jar.clone();
+            let form = captcha::answer_form(&html, &page, &c, "");
+            // The solved token is only handed back to the site that showed the challenge.
+            if u::hostname(&form.action).is_empty() || !u::hostname(&form.action).eq_ignore_ascii_case(&u::hostname(&page)) {
+                return Err(Error::new(format!("{} answer goes to another site", c.label())));
+            }
+            let token = captcha::solve(&self.net, &key, &c, &page).await?;
+            let form = captcha::answer_form(&html, &page, &c, &token);
             let body = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(&form.fields).finish();
-            cookies = captcha::merge_cookies(&cookies, f.headers.get("set-cookie").map(|s| s.as_str()));
-            let mut so = ReqOpts { auth: link.auth.clone(), max_bytes: Some(4 * 1024 * 1024), timeout_sec: Some(30.0), ..Default::default() }.header("Referer", page_url);
-            if !cookies.is_empty() {
-                so = so.header("Cookie", &cookies);
+            let sent = u::cookies_for(&form.action, &jar, &cookies);
+            let mut so = ReqOpts { auth: link.auth.clone(), max_bytes: Some(4 * 1024 * 1024), timeout_sec: Some(30.0), ..Default::default() }.header("Referer", &page);
+            if !sent.is_empty() {
+                so = so.header("Cookie", &sent);
             }
             let mut target = form.action.clone();
             if form.method == "GET" {
@@ -611,13 +624,15 @@ impl LinkGrabber {
                 so = so.header("Content-Type", "application/x-www-form-urlencoded");
             }
             f = self.net.fetch_buffer(&target, &so).await?;
-            cookies = captcha::merge_cookies(&cookies, f.headers.get("set-cookie").map(|s| s.as_str()));
+            let landed = at(&f, &target);
+            cookies = captcha::merge_cookies(&u::cookies_for(&landed, &jar, &sent), f.headers.get("set-cookie").map(|s| s.as_str()));
+            jar = landed;
             html = String::from_utf8_lossy(&f.body).into_owned();
             if captcha::detect(&html).is_some() {
                 return Err(Error::new(format!("{} was not accepted", c.label())));
             }
         }
-        let page_url = if f.url.is_empty() { page_url } else { f.url.as_str() };
+        let page_url = jar.as_str();
         let files: Vec<_> = extract_links(&html, page_url)
             .into_iter()
             .filter(|x| x.tag != "css" && (hosters::keeps_fragment(&x.url) || !PAGE_EXT.contains(&u::ext_of(&url::Url::parse(&x.url).map(|p| p.path().to_string()).unwrap_or_default()).as_str())))

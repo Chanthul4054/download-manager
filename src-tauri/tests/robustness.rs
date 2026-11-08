@@ -174,3 +174,28 @@ async fn futures_poll_once<F: std::future::Future>(f: std::pin::Pin<&mut F>) -> 
     let mut f = f;
     std::future::poll_fn(|cx| std::task::Poll::Ready(f.as_mut().poll(cx).is_ready())).await
 }
+
+#[test]
+fn progress_of_several_running_downloads_is_saved_to_disk_while_they_run() {
+    run(async {
+        let env = setup("odm-rob-", json!({ "connection": { "maxConnections": 1 } }));
+        // Four slow downloads started 800 ms apart: their 3-second save requests interleave.
+        let ids: Vec<String> = (0..4).map(|i| add(&env, format!("{}/file/{}?rate={}", SRV.base, 4 * MB + i, 400 * 1024), json!({}))).collect();
+        for id in &ids {
+            env.mgr.start(id);
+            sleep(800).await;
+        }
+        sleep(6000).await;
+        let text = std::fs::read_to_string(env.store.file("downloads")).expect("downloads.json was never written while downloads ran");
+        let saved: Value = serde_json::from_str(&text).unwrap();
+        let progress: Vec<u64> = saved
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["segments"].as_array().map(|s| s.iter().map(|s| s["pos"].as_u64().unwrap_or(0) - s["start"].as_u64().unwrap_or(0)).sum()).unwrap_or(0))
+            .collect();
+        assert!(progress.iter().all(|&p| p > 0), "progress on disk while running: {progress:?}");
+        env.mgr.stop_all();
+        env.mgr.dispose();
+    });
+}

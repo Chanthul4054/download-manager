@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::limiter::{perf_now, take_all, RateLimiter, LimiterRef, SpeedMeter};
 use super::net::{ReqOpts, Response};
-use super::{file_len, interval, open, set_len, sleep_ms, write_at, Ctx, Engine, EngineEvent, Fh, Meta, Sink, MAX_PIECE};
+use super::{file_len, interval, open, set_len, sleep_ms, write_at, Ctx, Engine, EngineEvent, Fh, Meta, Sink, MAX_FAST_PIECE, MAX_PIECE};
 use crate::error::{Error, Result};
 use crate::item::{seg, ItemRef, SegRef, INF};
 use crate::js;
@@ -498,6 +498,12 @@ impl HttpDownload {
         self.ctx.net.request(url, &opts).await
     }
 
+    /// Largest piece to write at once: small while any speed limit applies.
+    fn piece_cap(&self) -> u64 {
+        let limited = self.limiter.borrow().limited() || (self.ctx.limiters)().iter().any(|l| l.borrow().limited());
+        (if limited { MAX_PIECE } else { MAX_FAST_PIECE }) as u64
+    }
+
     async fn wait_limiters(&self, n: usize) {
         let mut all = vec![self.limiter.clone()];
         all.extend((self.ctx.limiters)());
@@ -557,7 +563,7 @@ impl HttpDownload {
                         if room == 0 {
                             break;
                         }
-                        let take = (chunk.len() as u64).min(room).min(MAX_PIECE as u64) as usize;
+                        let take = (chunk.len() as u64).min(room).min(self.piece_cap()) as usize;
                         let part = chunk.split_to(take);
                         self.wait_limiters(part.len()).await;
                         self.write(w, part).await?;
@@ -941,7 +947,7 @@ impl HttpDownload {
                     }
                     continue;
                 }
-                let take = (chunk.len() as u64).min(room).min(MAX_PIECE as u64) as usize;
+                let take = (chunk.len() as u64).min(room).min(self.piece_cap()) as usize;
                 let part = chunk.split_to(take);
                 self.wait_limiters(part.len()).await;
                 if let Some(p) = pending.take() {

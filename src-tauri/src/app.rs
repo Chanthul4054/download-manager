@@ -29,7 +29,7 @@ use crate::engine::net::{NetContext, ReqOpts, Resolver};
 use crate::engine::{interval, ytdlp};
 use crate::error::{Error, Result};
 use crate::grabber::{file_presets, new_project, GEvent, GrabberRun};
-use crate::integration::{route, IntegrationRequest, IntegrationServer};
+use crate::integration::{route, IntegrationRequest, IntegrationServer, Pairing};
 use crate::js;
 use crate::linkgrabber::{LgEvent, LinkGrabber};
 use crate::manager::{DownloadManager, MgrEvent};
@@ -54,7 +54,7 @@ const INVOKE: &[&str] = &[
     "dialog:folder", "dialog:file", "dialog:confirm",
     "win:open", "win:close", "win:resize", "win:setTitle", "win:showMain", "win:toggleDrop",
     "clip:urls", "clip:write", "util:batch", "util:openExternal", "util:openPath", "util:probe", "util:hlsVariants", "util:ffmpeg", "util:extensionDir", "util:ytdlp", "util:ytdlpInstall", "util:ytdlpInfo", "util:torrentFiles", "util:torrentFirewall",
-    "import", "export", "batch:clipboard", "power:run", "power:cancel", "app:quit",
+    "import", "export", "batch:clipboard", "power:run", "power:cancel", "app:quit", "app:menu",
     "grabber:list", "grabber:get", "grabber:new", "grabber:save", "grabber:delete", "grabber:run", "grabber:stop",
     "grabber:setChecked", "grabber:addToList", "grabber:open",
     "lg:state", "lg:add", "lg:confirm", "lg:remove", "lg:removeOffline", "lg:clear", "lg:enable", "lg:updatePackage", "lg:renameLink",
@@ -77,6 +77,8 @@ pub enum CoreMsg {
     WindowDestroyed(String),
     WindowMoved(String, f64, f64),
     Integration(IntegrationRequest, std::sync::mpsc::Sender<(u16, Value)>),
+    /// The user's answer to a browser pairing prompt: nonce, allowed.
+    PairAnswer(String, bool),
 }
 
 /// The handle the Tauri side keeps to talk to the core.
@@ -303,6 +305,9 @@ pub struct App {
     queues: Rc<QueueManager>,
     link_grabber: Rc<LinkGrabber>,
     server: RefCell<IntegrationServer>,
+    /// The secret paired browsers send, and the browser asking for it right now.
+    token: String,
+    pairing: RefCell<Pairing>,
     tray: RefCell<Option<TrayIcon>>,
     has_main: Cell<bool>,
     drop_label: RefCell<Option<String>>,
@@ -349,6 +354,7 @@ impl App {
         if let Ok(res) = handle.path().resource_dir() {
             crate::engine::ffmpeg::set_bundled(PathBuf::from(dunce(res.join("ffmpeg").join(crate::engine::ffmpeg::exe()))));
         }
+        let token = crate::integration::load_token(&data_dir);
         let app = Rc::new(App {
             me: RefCell::new(std::rc::Weak::new()),
             handle,
@@ -360,6 +366,8 @@ impl App {
             queues,
             link_grabber,
             server: RefCell::new(IntegrationServer::default()),
+            token,
+            pairing: RefCell::new(Pairing::default()),
             tray: RefCell::new(None),
             has_main: Cell::new(false),
             drop_label: RefCell::new(None),
@@ -401,9 +409,9 @@ impl App {
         if transparent {
             tauri::window::Color(0, 0, 0, 0)
         } else if self.dark.get() {
-            tauri::window::Color(0x1b, 0x1d, 0x21, 255)
+            tauri::window::Color(0x12, 0x13, 0x16, 255)
         } else {
-            tauri::window::Color(0xf6, 0xf7, 0xf9, 255)
+            tauri::window::Color(0xff, 0xff, 0xff, 255)
         }
     }
 
@@ -465,7 +473,7 @@ impl App {
         let b = self.settings()["appearance"]["window"].clone();
         let width = js::num_or(js::get(&b, "width"), 1100.0);
         let height = js::num_or(js::get(&b, "height"), 680.0);
-        let menu = self.menu_template().ok();
+        let menu = if cfg!(target_os = "macos") { self.menu_template().ok() } else { None };
         let mut builder = WebviewWindowBuilder::new(&self.handle, "main", WebviewUrl::App("index.html?view=main".into()))
             .title("OpenDM")
             .inner_size(width, height)
@@ -1101,8 +1109,11 @@ impl App {
     }
 
     fn build_menu(&self) {
-        if let (Some(w), Ok(m)) = (self.main_window(), self.menu_template()) {
-            let _ = w.set_menu(m);
+        // Windows and Linux use the app's own menus in the UI; macOS keeps its system menu bar.
+        if cfg!(target_os = "macos") {
+            if let (Some(w), Ok(m)) = (self.main_window(), self.menu_template()) {
+                let _ = w.set_menu(m);
+            }
         }
         self.update_tray();
     }
@@ -1298,33 +1309,26 @@ impl App {
     }
 
     fn open_grabber(&self, project_id: Option<String>) {
-        let mut o = ViewOpts::new();
-        o.key = Some(format!("grabber:{}", project_id.clone().unwrap_or_else(|| "new".into())));
-        o.width = 980.0;
-        o.height = 680.0;
-        o.min_width = 760.0;
-        o.min_height = 480.0;
-        o.title = "Site Grabber".into();
-        o.maximizable = true;
-        let mut p = Map::new();
-        if let Some(id) = project_id {
-            p.insert("project".into(), json!(id));
-        }
-        self.open_view("grabber", p, o);
+        self.show_page("grabber", project_id.map(Value::String).unwrap_or(Value::Null), false);
     }
 
     fn open_link_grabber(&self, background: bool) {
-        let mut o = ViewOpts::new();
-        o.key = Some("linkgrabber".into());
-        o.width = 1080.0;
-        o.height = 660.0;
-        o.min_width = 760.0;
-        o.min_height = 420.0;
-        o.title = "LinkGrabber".into();
-        o.maximizable = true;
-        o.inactive = background;
-        o.background = background;
-        self.open_view("linkgrabber", Map::new(), o);
+        self.show_page("linkgrabber", Value::Null, background);
+    }
+
+    /// Shows a page of the main window. A window that is still being created reads it with `pending("nav")`.
+    fn show_page(&self, page: &str, arg: Value, background: bool) {
+        if self.main_window().is_none() {
+            if !background {
+                self.pending.borrow_mut().insert("nav".into(), json!([page, arg]));
+                self.create_main_window(true);
+            }
+            return;
+        }
+        if !background {
+            self.show_main();
+            self.send_to("main", "menu", vec![json!("nav"), json!(page), arg]);
+        }
     }
 
     fn message(&self, text: &str) {
@@ -1423,8 +1427,9 @@ impl App {
                     "url": d["url"], "fileName": d["fileName"], "saveDir": d["saveDir"], "category": d["category"],
                     "description": d["description"], "referer": d["referer"], "duplicateAction": "resume",
                 });
+                // One bad address must not drop every entry after it.
                 if self.manager.add(&o).is_err() {
-                    break;
+                    continue;
                 }
                 n += 1;
             }
@@ -1548,6 +1553,14 @@ impl App {
             req,
             &s,
             VERSION,
+            &self.token,
+            |nonce| {
+                let (reply, ask) = self.pairing.borrow_mut().poll(nonce, &self.token, std::time::Instant::now());
+                if ask {
+                    self.ask_pairing(nonce.to_string());
+                }
+                reply
+            },
             move |d| {
                 let pick = |k: &str| -> Value {
                     let v = js::get(&d, k);
@@ -1589,6 +1602,24 @@ impl App {
         )
     }
 
+    /// Asks whether a browser may connect; the answer comes back as CoreMsg::PairAnswer.
+    fn ask_pairing(&self, nonce: String) {
+        let tx = self.tx.clone();
+        self.handle
+            .dialog()
+            .message(
+                "A browser extension wants to connect to OpenDM.\n\nAllow it only if you just installed or reset the OpenDM browser extension. \
+                 A connected browser can send downloads to OpenDM and read its browser settings.",
+            )
+            .kind(MessageDialogKind::Warning)
+            .title("Connect a browser to OpenDM?")
+            .buttons(MessageDialogButtons::OkCancelCustom("Allow".into(), "Deny".into()))
+            .show_with_result(move |r| {
+                let allow = matches!(&r, MessageDialogResult::Ok | MessageDialogResult::Yes) || matches!(&r, MessageDialogResult::Custom(t) if t == "Allow");
+                let _ = tx.send(CoreMsg::PairAnswer(nonce, allow));
+            });
+    }
+
     // ---- IPC ---------------------------------------------------------------------------------------
 
     async fn invoke(&self, channel: &str, args: Vec<Value>, label: &str) -> Result<Value> {
@@ -1607,7 +1638,15 @@ impl App {
                 "items": m.list(),
                 "grabberPresets": file_presets(),
             }),
-            "pending" => self.pending.borrow().get(&js::str_of(&a(0))).cloned().unwrap_or(Value::Null),
+            "pending" => {
+                let key = js::str_of(&a(0));
+                let v = if key == "nav" { self.pending.borrow_mut().remove(&key) } else { self.pending.borrow().get(&key).cloned() };
+                v.unwrap_or(Value::Null)
+            }
+            "app:menu" => {
+                self.on_menu(&js::str_of(&a(0))).await;
+                Value::Null
+            }
 
             "dl:describe" => m.describe(&js::str_of(&a(0)), &a(1)).await,
             "dl:add" => {
@@ -1639,6 +1678,9 @@ impl App {
                 let mut ids = Vec::new();
                 for mut x in list {
                     x["start"] = json!(false);
+                    // The links window passes the page's cookies with every link; only links on
+                    // the page's own host may carry them.
+                    x["cookies"] = json!(u::cookies_for(&js::str_of(&x["url"]), &js::str_of(&x["referer"]), &js::str_of(&x["cookies"])));
                     if !js::truthy(js::get(&x, "duplicateAction")) {
                         x["duplicateAction"] = json!("number");
                     }
@@ -2344,6 +2386,9 @@ impl App {
                 }
                 CoreMsg::Integration(req, reply) => {
                     let _ = reply.send(self.on_integration(req));
+                }
+                CoreMsg::PairAnswer(nonce, allow) => {
+                    self.pairing.borrow_mut().answer(&nonce, allow, std::time::Instant::now());
                 }
             }
         }

@@ -168,7 +168,22 @@ async fn call(net: &NetContext, path: &str, body: Value) -> Result<Value> {
 }
 
 /// Has 2Captcha solve the challenge and returns the token.
+/// Paid solves allowed per window: a pasted list of links can hold any number of captcha pages.
+const SOLVE_BUDGET: usize = 20;
+const SOLVE_WINDOW: Duration = Duration::from_secs(30 * 60);
+static SOLVES: std::sync::Mutex<std::collections::VecDeque<std::time::Instant>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// Takes one solve from the budget, or None when it is used up.
+fn spend(now: std::time::Instant) -> Option<()> {
+    let mut q = SOLVES.lock().unwrap_or_else(|e| e.into_inner());
+    while q.front().is_some_and(|t| now.duration_since(*t) > SOLVE_WINDOW) {
+        q.pop_front();
+    }
+    (q.len() < SOLVE_BUDGET).then(|| q.push_back(now))
+}
+
 pub async fn solve(net: &NetContext, api_key: &str, c: &Challenge, page_url: &str) -> Result<String> {
+    spend(std::time::Instant::now()).ok_or_else(|| Error::new(format!("{} not solved: {SOLVE_BUDGET} captchas were already solved in the last 30 minutes", c.label())))?;
     let kind = match (c.kind, c.enterprise) {
         ("recaptcha", true) => "RecaptchaV2EnterpriseTaskProxyless",
         ("recaptcha", false) => "RecaptchaV2TaskProxyless",
@@ -195,6 +210,13 @@ pub async fn solve(net: &NetContext, api_key: &str, c: &Challenge, page_url: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn solves_are_budgeted_per_window() {
+        let t = std::time::Instant::now();
+        assert_eq!((0..SOLVE_BUDGET + 5).filter(|_| spend(t).is_some()).count(), SOLVE_BUDGET);
+        assert!(spend(t + SOLVE_WINDOW + Duration::from_secs(1)).is_some());
+    }
 
     #[test]
     fn detects_widgets_by_site_key_shape() {

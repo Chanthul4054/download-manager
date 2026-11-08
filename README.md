@@ -75,6 +75,8 @@ The extension is installed together with the app.
 2. Open `chrome://extensions` (or `edge://extensions`) and turn on **Developer mode**.
 3. Click **Load unpacked** and choose that folder.
 4. Pin the OpenDM icon. Clicking it turns browser integration on or off.
+5. OpenDM then asks whether to allow this browser. Choose **Allow**. Only programs you allowed
+   this way can send downloads to OpenDM. If you chose Deny, click the OpenDM icon to be asked again.
 
 Keep OpenDM running while you browse; it lives in the notification area when its window is
 closed. To quit it completely, use **Tasks → Exit**.
@@ -103,7 +105,7 @@ are kept in `%APPDATA%\OpenDM` (`~/Library/Application Support/OpenDM` on macOS,
 
 ```sh
 npm install
-npm start          # tauri dev: builds the Rust app and opens it
+npm start          # tauri dev: starts Vite on :1420, builds the Rust app and opens it
 ```
 
 ### Browser extension when running from source
@@ -112,6 +114,8 @@ npm start          # tauri dev: builds the Rust app and opens it
 2. Click **Load unpacked** and choose the `extension/` folder of this repository.
 3. Keep OpenDM running. The extension talks to it on `127.0.0.1:52790`. To use a different port,
    change it in **Options → General**.
+4. The first time the extension connects, OpenDM asks whether to allow the browser. Choose
+   **Allow**. If you chose Deny, click the extension's toolbar button to be asked again.
 
 ## Command line
 
@@ -181,7 +185,12 @@ src-tauri/           the app (Rust)
   src/integration.rs local server for the browser extension
   tests/             integration tests against a local test server
   examples/          benchmark, bench server and icon generator
-src/renderer/        user interface (no framework); js/bridge.js connects it to the app
+src/                 user interface: React, TypeScript, Vite, Tailwind CSS
+  services/ipc.ts    typed bridge to the app (every channel and event)
+  stores/            app state (Zustand) kept in sync with the backend's events
+  pages/             main-window pages (Downloads, LinkGrabber, Site Grabber, Queues, Settings…)
+  windows/           small windows (progress, Download File Info, link list, drop target…)
+  components/        UI kit, layout, download list, dialogs, settings sections
 extension/           Chrome/Edge extension (Manifest V3)
 ```
 
