@@ -54,7 +54,7 @@ try {
   if (id) {
     const before = st.items.find((i) => i.id === id);
     step('paused download present', !!before && before.status === 'paused', { status: before?.status, downloaded: before?.downloaded });
-    await ipc(c, 'dl:start', id, false);
+    await ipc(c, 'dl:start', [id], false); // takes a list of ids; a bare string starts nothing
     let it;
     const t1 = performance.now();
     for (;;) {
