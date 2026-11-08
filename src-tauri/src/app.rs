@@ -29,7 +29,7 @@ use crate::engine::net::{NetContext, ReqOpts, Resolver};
 use crate::engine::{interval, ytdlp};
 use crate::error::{Error, Result};
 use crate::grabber::{file_presets, new_project, GEvent, GrabberRun};
-use crate::integration::{route, IntegrationRequest, IntegrationServer};
+use crate::integration::{route, IntegrationRequest, IntegrationServer, Pairing};
 use crate::js;
 use crate::linkgrabber::{LgEvent, LinkGrabber};
 use crate::manager::{DownloadManager, MgrEvent};
@@ -77,6 +77,8 @@ pub enum CoreMsg {
     WindowDestroyed(String),
     WindowMoved(String, f64, f64),
     Integration(IntegrationRequest, std::sync::mpsc::Sender<(u16, Value)>),
+    /// The user's answer to a browser pairing prompt: nonce, allowed.
+    PairAnswer(String, bool),
 }
 
 /// The handle the Tauri side keeps to talk to the core.
@@ -303,6 +305,9 @@ pub struct App {
     queues: Rc<QueueManager>,
     link_grabber: Rc<LinkGrabber>,
     server: RefCell<IntegrationServer>,
+    /// The secret paired browsers send, and the browser asking for it right now.
+    token: String,
+    pairing: RefCell<Pairing>,
     tray: RefCell<Option<TrayIcon>>,
     has_main: Cell<bool>,
     drop_label: RefCell<Option<String>>,
@@ -349,6 +354,7 @@ impl App {
         if let Ok(res) = handle.path().resource_dir() {
             crate::engine::ffmpeg::set_bundled(PathBuf::from(dunce(res.join("ffmpeg").join(crate::engine::ffmpeg::exe()))));
         }
+        let token = crate::integration::load_token(&data_dir);
         let app = Rc::new(App {
             me: RefCell::new(std::rc::Weak::new()),
             handle,
@@ -360,6 +366,8 @@ impl App {
             queues,
             link_grabber,
             server: RefCell::new(IntegrationServer::default()),
+            token,
+            pairing: RefCell::new(Pairing::default()),
             tray: RefCell::new(None),
             has_main: Cell::new(false),
             drop_label: RefCell::new(None),
@@ -1544,6 +1552,14 @@ impl App {
             req,
             &s,
             VERSION,
+            &self.token,
+            |nonce| {
+                let (reply, ask) = self.pairing.borrow_mut().poll(nonce, &self.token, std::time::Instant::now());
+                if ask {
+                    self.ask_pairing(nonce.to_string());
+                }
+                reply
+            },
             move |d| {
                 let pick = |k: &str| -> Value {
                     let v = js::get(&d, k);
@@ -1583,6 +1599,24 @@ impl App {
                 me2.collect_links(json!({ "links": d["links"], "referer": d["pageUrl"], "cookies": d["cookies"], "userAgent": d["userAgent"], "title": title, "source": "browser" }));
             },
         )
+    }
+
+    /// Asks whether a browser may connect; the answer comes back as CoreMsg::PairAnswer.
+    fn ask_pairing(&self, nonce: String) {
+        let tx = self.tx.clone();
+        self.handle
+            .dialog()
+            .message(
+                "A browser extension wants to connect to OpenDM.\n\nAllow it only if you just installed or reset the OpenDM browser extension. \
+                 A connected browser can send downloads to OpenDM and read its browser settings.",
+            )
+            .kind(MessageDialogKind::Warning)
+            .title("Connect a browser to OpenDM?")
+            .buttons(MessageDialogButtons::OkCancelCustom("Allow".into(), "Deny".into()))
+            .show_with_result(move |r| {
+                let allow = matches!(&r, MessageDialogResult::Ok | MessageDialogResult::Yes) || matches!(&r, MessageDialogResult::Custom(t) if t == "Allow");
+                let _ = tx.send(CoreMsg::PairAnswer(nonce, allow));
+            });
     }
 
     // ---- IPC ---------------------------------------------------------------------------------------
@@ -2348,6 +2382,9 @@ impl App {
                 }
                 CoreMsg::Integration(req, reply) => {
                     let _ = reply.send(self.on_integration(req));
+                }
+                CoreMsg::PairAnswer(nonce, allow) => {
+                    self.pairing.borrow_mut().answer(&nonce, allow, std::time::Instant::now());
                 }
             }
         }

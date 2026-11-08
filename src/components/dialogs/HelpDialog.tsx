@@ -89,6 +89,7 @@ const TOPICS: Record<string, [string, () => React.ReactNode]> = {
             <ExtensionFolder />
           </li>
           <li>Pin the OpenDM icon. Clicking it turns integration on or off for the browser.</li>
+          <li>When OpenDM asks whether to allow the browser, choose Allow.</li>
         </UL>
         <P>
           The extension talks to the app on 127.0.0.1, port <b className="text-fg">{useApp.getState().settings.general.integrationPort}</b>. If you change the port, change it in the extension options too.

@@ -75,6 +75,8 @@ The extension is installed together with the app.
 2. Open `chrome://extensions` (or `edge://extensions`) and turn on **Developer mode**.
 3. Click **Load unpacked** and choose that folder.
 4. Pin the OpenDM icon. Clicking it turns browser integration on or off.
+5. OpenDM then asks whether to allow this browser. Choose **Allow**. Only programs you allowed
+   this way can send downloads to OpenDM. If you chose Deny, click the OpenDM icon to be asked again.
 
 Keep OpenDM running while you browse; it lives in the notification area when its window is
 closed. To quit it completely, use **Tasks → Exit**.
@@ -112,6 +114,8 @@ npm start          # tauri dev: starts Vite on :1420, builds the Rust app and op
 2. Click **Load unpacked** and choose the `extension/` folder of this repository.
 3. Keep OpenDM running. The extension talks to it on `127.0.0.1:52790`. To use a different port,
    change it in **Options → General**.
+4. The first time the extension connects, OpenDM asks whether to allow the browser. Choose
+   **Allow**. If you chose Deny, click the extension's toolbar button to be asked again.
 
 ## Command line
 

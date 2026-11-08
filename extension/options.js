@@ -11,7 +11,12 @@ $('save').addEventListener('click', async () => {
   $('status').textContent = 'Testing…';
   $('status').className = '';
   chrome.runtime.sendMessage({ type: 'odm-test' }, (r) => {
-    if (r?.alive) {
+    if (r?.alive && !r.cfg) {
+      $('status').textContent = r.refused
+        ? 'OpenDM did not allow this browser. Click the OpenDM toolbar button to ask again.'
+        : 'OpenDM is running. Choose Allow in the prompt it shows to connect this browser.';
+      $('status').className = 'bad';
+    } else if (r?.alive) {
       $('status').textContent = `Connected to OpenDM ${r.cfg.version}. Browser integration is ${r.cfg.enabled ? 'on' : 'off'} in the app.`;
       $('status').className = 'ok';
     } else {

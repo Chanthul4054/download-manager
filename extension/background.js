@@ -3,24 +3,83 @@
 // listening on 127.0.0.1. If the app is unreachable, the browser keeps its own download.
 
 const DEFAULT_PORT = 52790;
-const state = { enabled: true, port: DEFAULT_PORT, cfg: null, alive: false, checkedAt: 0, lastClick: null };
+// token: what OpenDM gave this browser when the user allowed it; refused: the user said no.
+const state = { enabled: true, port: DEFAULT_PORT, cfg: null, alive: false, checkedAt: 0, lastClick: null, token: '', refused: false, off: false, pairing: null };
 const tabMedia = new Map(); // tabId -> [{url, type, size, ext, kind}]
 const passThrough = new Set(); // urls we re-issued to the browser after a failed hand-off
 
 async function loadLocal() {
-  const s = await chrome.storage.local.get({ enabled: true, port: DEFAULT_PORT });
+  const s = await chrome.storage.local.get({ enabled: true, port: DEFAULT_PORT, token: '', refused: false });
   state.enabled = s.enabled;
   state.port = Number(s.port) || DEFAULT_PORT;
+  state.token = s.token;
+  state.refused = s.refused;
 }
 
+class Unpaired extends Error {}
+
 async function call(path, body) {
-  const res = await fetch(`http://127.0.0.1:${state.port}${path}`, {
-    method: body ? 'POST' : 'GET',
-    headers: body ? { 'X-OpenDM': '1', 'Content-Type': 'application/json' } : { 'X-OpenDM': '1' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const headers = { 'X-OpenDM': '1', 'X-OpenDM-Token': state.token };
+  if (body) headers['Content-Type'] = 'application/json';
+  const res = await fetch(`http://127.0.0.1:${state.port}${path}`, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined });
+  if (res.status === 401) {
+    pair();
+    throw new Unpaired('OpenDM has not allowed this browser yet');
+  }
   if (!res.ok) throw new Error('OpenDM replied ' + res.status);
   return res.json();
+}
+
+// Asks OpenDM for its token: the app shows the user a prompt, and we poll with a nonce of our own
+// until they answer. The nonce is kept in storage so a restarted service worker keeps waiting for
+// the same prompt instead of opening another.
+function pair() {
+  if (state.pairing || state.refused) return state.pairing;
+  state.pairing = (async () => {
+    state.off = false;
+    let { pairNonce } = await chrome.storage.local.get({ pairNonce: '' });
+    if (!pairNonce) {
+      pairNonce = Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, '0')).join('');
+      await chrome.storage.local.set({ pairNonce });
+    }
+    const deadline = Date.now() + 130000;
+    while (Date.now() < deadline) {
+      let res;
+      try {
+        res = await fetch(`http://127.0.0.1:${state.port}/api/pair`, { method: 'POST', headers: { 'X-OpenDM': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce: pairNonce }) });
+      } catch {
+        return;
+      }
+      if (res.status === 200) {
+        state.token = (await res.json()).token;
+        state.checkedAt = 0;
+        await chrome.storage.local.set({ token: state.token, pairNonce: '' });
+        return true;
+      }
+      if (res.status === 403) {
+        state.refused = true;
+        await chrome.storage.local.set({ refused: true, pairNonce: '' });
+        return;
+      }
+      if (res.status === 409) {
+        state.off = true;
+        return;
+      }
+      // 202: the user has not answered yet; 429: another prompt is open. Anything else: give up.
+      if (res.status !== 202 && res.status !== 429) return;
+      // Reading storage also keeps the service worker alive while we wait.
+      await new Promise((r) => setTimeout(r, 1000));
+      await chrome.storage.local.get('pairNonce');
+    }
+  })()
+    .catch(() => false)
+    .then((paired) => {
+      state.pairing = null;
+      // Only with a new token: otherwise the 30 s alarm tries again, never a tight loop.
+      if (paired) refreshConfig(true);
+      else updateBadge();
+    });
+  return state.pairing;
 }
 
 async function refreshConfig(force = false) {
@@ -29,8 +88,9 @@ async function refreshConfig(force = false) {
   try {
     state.cfg = await call('/api/config');
     state.alive = true;
-  } catch {
-    state.alive = false;
+  } catch (e) {
+    state.cfg = null;
+    state.alive = e instanceof Unpaired;
   }
   updateBadge();
   buildMenus();
@@ -45,7 +105,19 @@ function updateBadge() {
   const on = active();
   chrome.action.setIcon({ path: on ? { 16: 'icons/icon16.png', 32: 'icons/icon32.png' } : { 16: 'icons/icon16-off.png', 32: 'icons/icon32-off.png' } });
   chrome.action.setTitle({
-    title: !state.enabled ? 'OpenDM [DISABLED] (click to enable)' : !state.alive ? 'OpenDM is not running (start the app)' : !state.cfg?.enabled ? 'OpenDM: browser integration is off in the app options' : 'OpenDM (click to disable integration)',
+    title: !state.enabled
+      ? 'OpenDM [DISABLED] (click to enable)'
+      : !state.alive
+        ? 'OpenDM is not running (start the app)'
+        : !state.cfg
+          ? state.off
+            ? 'OpenDM: browser integration is off in the app options'
+            : state.refused
+              ? 'OpenDM: this browser was not allowed (click to ask again)'
+              : 'OpenDM: allow this browser in the prompt OpenDM is showing'
+          : !state.cfg.enabled
+            ? 'OpenDM: browser integration is off in the app options'
+            : 'OpenDM (click to disable integration)',
   });
 }
 
@@ -185,6 +257,15 @@ function collectLinks(selectedOnly) {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   await refreshConfig(true);
   if (!state.alive) return notifyTab(tab, 'OpenDM is not running. Start the OpenDM app and try again.');
+  if (!state.cfg) {
+    // A menu click is the user asking: after a refusal, ask OpenDM again.
+    if (state.refused) {
+      state.refused = false;
+      await chrome.storage.local.set({ refused: false });
+      pair();
+    }
+    return notifyTab(tab, 'OpenDM needs to allow this browser first. Choose Allow in the prompt OpenDM shows, then try again.');
+  }
   try {
     if (info.menuItemId === 'odm-videopage') {
       const title = (tab.title || 'video').replace(/ - YouTube$/, '').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 150) || 'video';
@@ -427,12 +508,17 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     return true;
   }
   if (msg.type === 'odm-test') {
-    loadLocal().then(() => refreshConfig(true)).then(() => reply({ alive: state.alive, cfg: state.cfg }));
+    loadLocal().then(() => refreshConfig(true)).then(() => reply({ alive: state.alive, cfg: state.cfg, refused: state.refused }));
     return true;
   }
 });
 
 chrome.action.onClicked.addListener(async () => {
+  if (state.enabled && state.alive && !state.cfg && state.refused) {
+    state.refused = false;
+    await chrome.storage.local.set({ refused: false });
+    return pair();
+  }
   state.enabled = !state.enabled;
   await chrome.storage.local.set({ enabled: state.enabled });
   buildMenus.last = null;
