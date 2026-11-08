@@ -37,6 +37,7 @@ export function DownloadList({ items, columns, configurable, empty }: Props) {
     for (const c of columns) w[c] = live[c] ?? (configurable ? savedWidths[c as keyof typeof savedWidths] : undefined) ?? COLUMNS[c].width;
     return w;
   }, [columns, live, savedWidths, configurable]);
+  // Columns keep their widths; a narrow window scrolls the table sideways.
   const total = columns.reduce((a, c) => a + widths[c], 0) + 72;
 
   // Keyboard order and shift-click ranges follow what is on screen.
@@ -121,7 +122,11 @@ export function DownloadList({ items, columns, configurable, empty }: Props) {
         aria-rowcount={items.length}
         aria-multiselectable
         onKeyDown={onKey}
-        onScroll={(e) => setView((v) => ({ ...v, top: e.currentTarget.scrollTop }))}
+        onScroll={(e) => {
+          // Read now: React clears currentTarget before a deferred updater runs (it crashed on sideways scrolls).
+          const top = e.currentTarget.scrollTop;
+          setView((v) => (v.top === top ? v : { ...v, top }));
+        }}
         onContextMenuCapture={(e) => {
           const row = (e.target as HTMLElement).closest<HTMLElement>('[data-row]');
           if (!row) clearSelection();
