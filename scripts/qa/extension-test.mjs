@@ -13,6 +13,9 @@ const [exe, benchExe, work, chromeExe = 'C:/Program Files/Google/Chrome/Applicat
 const EXT = path.resolve(new URL('../../extension', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const DIALOG = path.resolve(new URL('./dialog.ps1', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const PROMPT = 'Connect a browser to OpenDM?';
+// Not the default 52790: an OpenDM extension in the user's own browser polls that port, would take
+// the app's one pairing prompt, and the test's "Allow" would answer that browser instead.
+const API = 52796;
 const results = [];
 const check = (name, ok, detail = {}) => {
   results.push({ name, ok: !!ok, ...detail });
@@ -30,7 +33,7 @@ const sha = async (n) => (await (await fetch(`${base}/hash/${n}`)).text()).trim(
 const data = path.join(work, 'data');
 mkdirSync(data, { recursive: true });
 writeFileSync(path.join(data, 'settings.json'), JSON.stringify({
-  general: { monitorClipboard: false },
+  general: { monitorClipboard: false, integrationPort: API },
   downloads: { showStartDialog: false, showCompleteDialog: false, progressDialog: 'none' },
   saveTo: { tempDir: path.join(work, 'tmp') },
 }));
@@ -73,6 +76,7 @@ async function chrome(name) {
   }
   const swSession = (await send('Target.attachToTarget', { targetId: sw.targetId, flatten: true })).result.sessionId;
   const evalSW = async (expr) => (await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }, swSession)).result?.result?.value;
+  await evalSW(`chrome.storage.local.set({ port: ${API} })`);
   const page = (await send('Target.getTargets')).result.targetInfos.find((t) => t.type === 'page');
   const pageSession = (await send('Target.attachToTarget', { targetId: page.targetId, flatten: true })).result.sessionId;
   const evalPage = async (expr) => (await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }, pageSession)).result?.result?.value;
@@ -131,8 +135,8 @@ try {
   // be fired from script, so "Download with OpenDM" stays a manual check (not reported as a pass).
 
   // An ordinary web page cannot use the app's API, even with the browser paired.
-  const fromPage = await b.evalPage(`fetch('http://127.0.0.1:52790/api/download', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-OpenDM': '1' }, body: JSON.stringify({ url: '${base}/file/1048576/page.zip' }) }).then((r) => 'status ' + r.status, (e) => 'blocked: ' + e.message)`);
-  const noToken = await fetch('http://127.0.0.1:52790/api/download', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-OpenDM': '1', Origin: `chrome-extension://${b.extId}` }, body: JSON.stringify({ url: `${base}/file/1048576/notoken.zip` }) }).then((r) => r.status, (e) => String(e));
+  const fromPage = await b.evalPage(`fetch('http://127.0.0.1:${API}/api/download', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-OpenDM': '1' }, body: JSON.stringify({ url: '${base}/file/1048576/page.zip' }) }).then((r) => 'status ' + r.status, (e) => 'blocked: ' + e.message)`);
+  const noToken = await fetch(`http://127.0.0.1:${API}/api/download`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-OpenDM': '1', Origin: `chrome-extension://${b.extId}` }, body: JSON.stringify({ url: `${base}/file/1048576/notoken.zip` }) }).then((r) => r.status, (e) => String(e));
   await sleep(1000);
   const leaked = (await items()).filter((i) => /page\.zip|notoken\.zip/.test(i.url));
   check('a web page and a token-less request are refused', leaked.length === 0 && noToken === 401, { fromPage, noToken, added: leaked.length });
