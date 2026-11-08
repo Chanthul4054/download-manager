@@ -1427,8 +1427,9 @@ impl App {
                     "url": d["url"], "fileName": d["fileName"], "saveDir": d["saveDir"], "category": d["category"],
                     "description": d["description"], "referer": d["referer"], "duplicateAction": "resume",
                 });
+                // One bad address must not drop every entry after it.
                 if self.manager.add(&o).is_err() {
-                    break;
+                    continue;
                 }
                 n += 1;
             }
