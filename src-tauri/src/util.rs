@@ -374,7 +374,8 @@ pub fn extract_urls(text: &str) -> Vec<String> {
 }
 
 pub async fn write_json_atomic(file: &Path, data: &Value) -> Result<()> {
-    let tmp = PathBuf::from(format!("{}.{}.tmp", file.display(), std::process::id()));
+    // Unique per write: a save aborted mid-write must not share its temp file with the next one.
+    let tmp = PathBuf::from(format!("{}.{}.{}.tmp", file.display(), std::process::id(), id()));
     // Settings hold site logins, proxy and 2Captcha keys; downloads hold cookies. Owner-only on
     // Unix from the moment the file exists (on Windows the per-user AppData folder already is).
     let mut dirs = tokio::fs::DirBuilder::new();
@@ -390,6 +391,13 @@ pub async fn write_json_atomic(file: &Path, data: &Value) -> Result<()> {
     }
     let mut f = opts.open(&tmp).await?;
     tokio::io::AsyncWriteExt::write_all(&mut f, serde_json::to_string_pretty(data)?.as_bytes()).await?;
+    // tokio's write_all returns before the write has run and holds back its error (disk full);
+    // sync_all waits for it, so a short file is never renamed over the good one.
+    if let Err(e) = f.sync_all().await {
+        drop(f);
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.into());
+    }
     drop(f);
     tokio::fs::rename(&tmp, file).await?;
     Ok(())
@@ -489,5 +497,24 @@ mod tests {
         assert_eq!(file_name_from_url("http://h/a%20b.zip?x=1").unwrap(), "a b.zip");
         assert_eq!(file_name_from_url("http://h/").unwrap(), "h");
         assert_eq!(file_name_from_url("http://h/%E0%A4%A"), None);
+    }
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::*;
+
+    #[test]
+    fn json_is_complete_on_disk_when_write_json_atomic_returns() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join(format!("odm-atomic-{}", id()));
+        let file = dir.join("downloads.json");
+        // Big enough that the write takes a while, as a long download list does.
+        let data = Value::Array((0..50_000).map(|i| serde_json::json!({ "id": i, "url": format!("http://h/{i}") })).collect());
+        for _ in 0..5 {
+            rt.block_on(write_json_atomic(&file, &data)).unwrap();
+            assert_eq!(read_json(&file).as_ref(), Some(&data), "file was incomplete right after the write returned");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
