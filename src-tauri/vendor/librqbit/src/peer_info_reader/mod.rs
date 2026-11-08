@@ -1,4 +1,5 @@
 use std::{net::SocketAddr, sync::Arc};
+use anyhow::Context;
 
 use bencode::from_bytes;
 use buffers::{ByteBuf, ByteBufOwned};
@@ -188,7 +189,8 @@ impl PeerConnectionHandler for Handler {
                 .locked
                 .write()
                 .as_mut()
-                .unwrap()
+                // OpenDM: a peer can send metadata before its extended handshake.
+                .context("metadata piece before the extended handshake")?
                 .record_piece(&utdata, &self.info_hash)?;
             if piece_ready {
                 let buf = Bytes::from(self.locked.write().take().unwrap().buffer);

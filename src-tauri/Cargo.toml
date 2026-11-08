@@ -66,3 +66,9 @@ strip = true
 [patch.crates-io]
 # librqbit with peer encryption (MSE/PE) and a PEX switch added; see vendor/librqbit/src/mse.rs.
 librqbit = { path = "vendor/librqbit" }
+# Registry librqbit crates patched for remote input: a capped tracker response and interval, and UDP
+# loops that survive one failed receive (Windows reports an ICMP "port unreachable" as an error).
+librqbit-tracker-comms = { path = "vendor/librqbit-tracker-comms" }
+librqbit-dht = { path = "vendor/librqbit-dht" }
+librqbit-utp = { path = "vendor/librqbit-utp" }
+librqbit-lsd = { path = "vendor/librqbit-lsd" }

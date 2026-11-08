@@ -34,13 +34,27 @@ static SESSION: OnceCell<Arc<Session>> = OnceCell::const_new();
 /// Magnet links, and .torrent files on the web or on this computer (file:///…).
 pub fn is_torrent(url: &str) -> bool {
     url.starts_with("magnet:?")
-        || url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https" | "file") && u.path().to_lowercase().ends_with(".torrent"))
+        || url::Url::parse(url).is_ok_and(|u| (matches!(u.scheme(), "http" | "https") || local_file(&u)) && u.path().to_lowercase().ends_with(".torrent"))
 }
 
-/// What librqbit is given for an address: a local .torrent file is read here.
-fn source(url: &str) -> Result<AddTorrent<'static>> {
+/// A file: address on this computer. file://server/share/x is a network share on Windows, and
+/// opening it would send the user's Windows login to that server.
+fn local_file(u: &url::Url) -> bool {
+    u.scheme() == "file" && u.host_str().is_none_or(|h| h.is_empty() || h.eq_ignore_ascii_case("localhost"))
+}
+
+/// What librqbit is given for an address: a .torrent file is read here — from the web through
+/// OpenDM's own capped fetch, as librqbit would buffer any size.
+async fn source(net: &NetContext, url: &str) -> Result<AddTorrent<'static>> {
     match url::Url::parse(url) {
+        Ok(u) if matches!(u.scheme(), "http" | "https") => {
+            let f = net.fetch_buffer(url, &ReqOpts { max_bytes: Some(16 * 1024 * 1024), timeout_sec: Some(30.0), ..Default::default() }).await?;
+            Ok(AddTorrent::from_bytes(f.body))
+        }
         Ok(u) if u.scheme() == "file" => {
+            if !local_file(&u) {
+                return Err(Error::new("Torrent files on other computers are not opened"));
+            }
             let path = u.to_file_path().map_err(|_| Error::new("Invalid file address"))?;
             Ok(AddTorrent::from_bytes(std::fs::read(&path).map_err(|e| Error::new(format!("Could not read {}: {}", path.display(), e)))?))
         }
@@ -52,7 +66,7 @@ fn source(url: &str) -> Result<AddTorrent<'static>> {
 /// has to fetch this from peers first.
 pub async fn list_files(store: &Store, net: &NetContext, url: &str) -> Result<Value> {
     let sess = session(store, net).await?;
-    let src = source(url)?;
+    let src = source(net, url).await?;
     on_rt(async move {
         let add = sess.add_torrent(src, Some(AddTorrentOptions { list_only: true, ..Default::default() }));
         let r = tokio::time::timeout(Duration::from_secs(90), add).await.map_err(|_| anyhow::anyhow!("No peers sent the torrent's file list"))??;
@@ -235,18 +249,19 @@ impl TorrentDownload {
     async fn download(self: Rc<Self>) -> Result<()> {
         self.emit(EngineEvent::Status("Getting torrent info...".into()));
         let sess = session(&self.ctx.store, &self.ctx.net).await?;
-        let (url, out, kb, only) = {
+        let (url, out, kb, only, ours) = {
             let it = self.item.borrow();
             let only: Option<Vec<usize>> = it.extra.get("onlyFiles").and_then(|v| serde_json::from_value(v.clone()).ok());
-            (it.url.clone(), it.save_dir.clone(), it.speed_limit_kb, only)
+            (it.url.clone(), it.save_dir.clone(), it.speed_limit_kb, only, it.extra.contains_key("infoHash"))
         };
-        let src = source(&url)?;
+        let src = source(&self.ctx.net, &url).await?;
         let s2 = sess.clone();
         let h = on_rt(async move {
             let opts = AddTorrentOptions {
                 output_folder: Some(out),
-                // Lets a stopped or restarted torrent continue from the pieces already on disk.
-                overwrite: true,
+                // Lets a stopped or restarted torrent continue from the pieces already on disk. A new
+                // torrent must not adopt (and later delete) files that were already in the folder.
+                overwrite: ours,
                 // shortcut: the per-download limit is applied when the torrent starts, not while it runs.
                 ratelimits: LimitsConfig { download_bps: NonZeroU32::new((kb * 1024.0) as u32), upload_bps: None },
                 only_files: only,
@@ -383,6 +398,12 @@ mod tests {
         assert_eq!(got, ["https://t.example/announce", "udp://tracker.example:1337/announce"]);
     }
 
+    #[tokio::test]
+    async fn remote_file_torrents_are_not_read() {
+        let net = NetContext::new(Store::new(&std::env::temp_dir().join(format!("opendm-torrent-{}", std::process::id()))), None);
+        assert!(source(&net, "file://attacker.example/share/x.torrent").await.is_err());
+    }
+
     #[test]
     fn recognises_torrent_addresses() {
         assert!(is_torrent("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=x"));
@@ -391,6 +412,7 @@ mod tests {
         assert!(!is_torrent("magnet-link.txt"));
         assert!(is_torrent("file:///C:/Users/me/Downloads/My%20File.torrent"));
         assert!(!is_torrent("file:///C:/Users/me/notes.txt") && !is_torrent("ftp://h/x.torrent"));
+        assert!(!is_torrent("file://attacker.example/share/x.torrent") && is_torrent("file://localhost/C:/x.torrent"));
         assert_eq!(magnet_name("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Big+Buck+Bunny").as_deref(), Some("Big Buck Bunny"));
         assert_eq!(magnet_name("https://x/?dn=a"), None);
     }
