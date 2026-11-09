@@ -89,6 +89,34 @@ pub async fn list_files(store: &Store, net: &NetContext, url: &str) -> Result<Va
     .map_err(err)
 }
 
+/// Where a new torrent is written: a multi-file torrent gets a folder named after it inside the
+/// save folder (as librqbit does by default), so its files don't spill into the save folder and
+/// collide with other downloads. Returns the source back for the real add.
+async fn torrent_folder(sess: &Arc<Session>, src: AddTorrent<'static>, save_dir: String) -> anyhow::Result<(AddTorrent<'static>, String)> {
+    let (probe, src) = match src {
+        AddTorrent::TorrentFileBytes(b) => (AddTorrent::TorrentFileBytes(b.clone()), AddTorrent::TorrentFileBytes(b)),
+        AddTorrent::Url(u) => (AddTorrent::Url(u.clone()), AddTorrent::Url(u)),
+    };
+    let name = match sess.add_torrent(probe, Some(AddTorrentOptions { list_only: true, ..Default::default() })).await? {
+        AddTorrentResponse::ListOnly(l) => multi_file_name(&l.info),
+        // Already in the session: the real add returns that torrent wherever it is.
+        _ => None,
+    };
+    let out = match name {
+        Some(n) => std::path::Path::new(&save_dir).join(n).to_string_lossy().into_owned(),
+        None => save_dir,
+    };
+    Ok((src, out))
+}
+
+/// The folder name for a torrent with two or more files (librqbit's rule), made safe for Windows.
+fn multi_file_name(info: &librqbit::ValidatedTorrentMetaV1Info<librqbit::ByteBufOwned>) -> Option<String> {
+    if info.iter_file_details().nth(1).is_none() {
+        return None;
+    }
+    Some(crate::util::sanitize_file_name(&info.name()?)).filter(|n| !n.is_empty())
+}
+
 /// The name a magnet link gives its torrent (dn=), until the torrent's own info arrives.
 pub fn magnet_name(url: &str) -> Option<String> {
     let u = url::Url::parse(url).ok().filter(|u| u.scheme() == "magnet")?;
@@ -249,16 +277,23 @@ impl TorrentDownload {
     async fn download(self: Rc<Self>) -> Result<()> {
         self.emit(EngineEvent::Status("Getting torrent info...".into()));
         let sess = session(&self.ctx.store, &self.ctx.net).await?;
-        let (url, out, kb, only, ours) = {
+        let (url, save_dir, kb, only, ours, dir) = {
             let it = self.item.borrow();
             let only: Option<Vec<usize>> = it.extra.get("onlyFiles").and_then(|v| serde_json::from_value(v.clone()).ok());
-            (it.url.clone(), it.save_dir.clone(), it.speed_limit_kb, only, it.extra.contains_key("infoHash"))
+            let dir = it.extra.get("torrentDir").and_then(|v| v.as_str()).map(String::from);
+            (it.url.clone(), it.save_dir.clone(), it.speed_limit_kb, only, it.extra.contains_key("infoHash"), dir)
         };
         let src = source(&self.ctx.net, &url).await?;
         let s2 = sess.clone();
-        let h = on_rt(async move {
+        let (h, out) = on_rt(async move {
+            // A restarted torrent stays where it was first written (older downloads: the save folder).
+            let (src, out) = match dir {
+                Some(d) => (src, d),
+                None if ours => (src, save_dir),
+                None => torrent_folder(&s2, src, save_dir).await?,
+            };
             let opts = AddTorrentOptions {
-                output_folder: Some(out),
+                output_folder: Some(out.clone()),
                 // Lets a stopped or restarted torrent continue from the pieces already on disk. A new
                 // torrent must not adopt (and later delete) files that were already in the folder.
                 overwrite: ours,
@@ -271,11 +306,14 @@ impl TorrentDownload {
             if h.is_paused() {
                 s2.unpause(&h).await?;
             }
-            anyhow::Ok(h)
+            anyhow::Ok((h, out))
         })
         .await?
         .map_err(err)?;
-        self.item.borrow_mut().extra.insert("infoHash".into(), json!(h.info_hash().as_string()));
+        let mut it = self.item.borrow_mut();
+        it.extra.insert("infoHash".into(), json!(h.info_hash().as_string()));
+        it.extra.insert("torrentDir".into(), json!(out));
+        drop(it);
         let mut named = false;
         let mut last = 0u64;
         let mut ticks = 0u32;
@@ -402,6 +440,20 @@ mod tests {
     async fn remote_file_torrents_are_not_read() {
         let net = NetContext::new(Store::new(&std::env::temp_dir().join(format!("opendm-torrent-{}", std::process::id()))), None);
         assert!(source(&net, "file://attacker.example/share/x.torrent").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn multi_file_torrents_get_their_own_folder() {
+        let dir = std::env::temp_dir().join(format!("opendm-tfolder-{}", std::process::id()));
+        let opts = SessionOptions { dht: None, disable_trackers: true, disable_local_service_discovery: true, ..Default::default() };
+        let sess = Session::new_with_opts(dir.clone(), opts).await.unwrap();
+        let pieces = format!("6:pieces20:{}", "x".repeat(20));
+        let multi = format!("d4:infod5:filesld6:lengthi1e4:pathl5:a.bineed6:lengthi1e4:pathl5:b.bineee4:name8:Game: X.12:piece lengthi16384e{pieces}ee");
+        let single = format!("d4:infod6:lengthi1e4:name5:a.bin12:piece lengthi16384e{pieces}ee");
+        let out = |b: String| torrent_folder(&sess, AddTorrent::from_bytes(b.into_bytes()), r"C:\dl".into());
+        assert_eq!(out(multi).await.unwrap().1, r"C:\dl\Game_ X");
+        assert_eq!(out(single).await.unwrap().1, r"C:\dl");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
