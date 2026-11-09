@@ -54,7 +54,8 @@ export function appMenu(): MenuEntry[] {
     },
     { label: 'Open browser extension folder', icon: Puzzle, onSelect: () => runMenu('ext-folder') },
     { label: 'Open data folder', icon: FolderOpen, onSelect: () => runMenu('data-folder') },
-    { label: 'Developer tools', icon: Bug, kbd: mod + 'Shift+I', onSelect: () => runMenu('devtools') },
+    // Developer tools only in development builds; the release backend has no devtools.
+    ...(import.meta.env.DEV ? [{ label: 'Developer tools', icon: Bug, kbd: mod + 'Shift+I', onSelect: () => runMenu('devtools') }] : []),
     '-',
     { label: 'Exit OpenDM', icon: LogOut, kbd: mod + 'Q', onSelect: () => runMenu('quit') },
   ];

@@ -2,7 +2,7 @@
 
 ```sh
 cargo build --release --examples --manifest-path src-tauri/Cargo.toml
-src-tauri/target/release/examples/download_bench [--runs 5] [--only name,name] [--server http://127.0.0.1:<port>] [--json out.json]
+src-tauri/target/release/examples/download_bench [--runs 5] [--only name,name] [--server http://127.0.0.1:<port>] [--json out.json] [--checkpoint <sec>]
 ```
 
 `download_bench` drives the real `DownloadManager` against `bench_server`, a local server started
@@ -23,6 +23,36 @@ connection (`?truncate`), and failures before success (`/flaky/<n>/<status>/…`
 These are loopback numbers. They show whether the engine is the limit at internet speeds, and that
 extra connections help when a server caps each connection; they say nothing about how fast any
 particular internet host will be.
+
+## Rust engine: durable checkpoints (2026-11-08, loopback, 3 runs)
+
+A running download flushes its temp file (`sync_data`: FlushFileBuffers on Windows) every
+`connection.checkpointSec` seconds (default 2) and only then saves the flushed positions to the
+download list, plus a final flush when it pauses, fails or completes. "none" is the engine before
+this change (list saved every 3 s, file never flushed), built from the same bench source.
+`--checkpoint <sec>` sets the interval; `huge-2GB-8conn` needs `BENCH_MAX_BYTES=2148532224`.
+
+Same machine as below. One bench_server for all four runs. Sync columns: syncs per run (all files),
+total and longest sync in ms. MB/s median; every file of every run passed the SHA-256 check.
+
+| Scenario | none | 1 s | 2 s (default) | 5 s |
+|---|---|---|---|---|
+| 8 × 128 MB, 1 MB/s per conn, 8 conn (16 s) | 63.2 MB/s, loop p99 6.8 ms | 63.3, p99 9.5, 136 syncs, 3502 ms (max 111) | 63.2, p99 7.5, 72 syncs, 2728 ms (max 293) | 63.2, p99 7.1, 32 syncs, 2044 ms (max 96) |
+| 2 GB, 8 conn | 987 MB/s | 858, final sync 550 ms | 953, final sync 605 ms | 981, final sync 669 ms |
+| 8 × 64 MB, 8 conn | 1218 | 928 | 1706 | 1308 |
+| 256 MB, 8 conn | 616 | 503 | 506 | 534 |
+| 256 MB, 1 conn | 204 | 909 | 229 | 230 |
+| 32 MB, 4 MB/s per conn, 8 conn | 28.0 | 27.8 | 27.6 | 27.3 |
+
+- At internet-like speeds (first row) throughput, memory (33–35 MB) and bytes written (1024 MB) do
+  not change; syncs run on the blocking pool, and the executor's timer lag stays under 10 ms.
+- The cost is the flush before a file is marked complete: ~0.6 s for 2 GB of unflushed data.
+- The loopback rows below the first two vary ±30–50 % from run to run in every mode (compare the
+  256 MB 1-conn row), so they show no effect either way. CPU per GB is too coarse to compare.
+- 2 s halves the sync work of 1 s and loses at most ~2 s of progress on a power cut (plus a sync in
+  flight), against 3 s of unflushed progress that could be lost or saved ahead of the data before.
+- Only NVMe was measured. On a hard disk a flush takes longer; downloads keep writing meanwhile,
+  but the interval may want to be longer there.
 
 ## Rust engine: write piece size (2026-11-08, loopback, 5 runs)
 

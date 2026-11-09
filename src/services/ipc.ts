@@ -48,6 +48,7 @@ export interface Channels {
   'win:open': [[view: string, params: Record<string, unknown>, opts?: Record<string, unknown>], Json];
   'win:close': [[], Json];
   'win:setTitle': [[title: string], Json];
+  'win:resize': [[width: number, height: number], Json];
   'win:showMain': [[], Json];
   'win:toggleDrop': [[], Json];
   'clip:urls': [[], string[]];

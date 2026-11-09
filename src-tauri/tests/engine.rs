@@ -16,11 +16,11 @@ static KEY: LazyLock<Vec<u8>> = LazyLock::new(|| random_bytes(16));
 
 struct Srv {
     base: String,
-    ranges: Arc<Mutex<Vec<usize>>>,
+    ranges: Arc<Mutex<Vec<(String, usize)>>>,
 }
 
 fn serve() -> Srv {
-    let ranges: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+    let ranges: Arc<Mutex<Vec<(String, usize)>>> = Arc::new(Mutex::new(Vec::new()));
     let hits = ranges.clone();
     let data = DATA.clone();
     let key = KEY.clone();
@@ -36,7 +36,7 @@ fn serve() -> Srv {
                 let (a, b) = rg.split_once('-').unwrap();
                 let start: usize = a.parse().unwrap();
                 let end: usize = if b.is_empty() { data.len() - 1 } else { b.parse().unwrap() };
-                hits.lock().unwrap().push(start);
+                hits.lock().unwrap().push((url.to_string(), start));
                 return with_name(
                     Resp::new(206, data[start..=end].to_vec())
                         .header("Content-Range", format!("bytes {}-{}/{}", start, end, data.len()))
@@ -98,7 +98,7 @@ fn pause_and_resume_continues_from_saved_segments() {
     run(async {
         let env = setup("odm-test-", json!({ "connection": { "maxConnections": 6 }, "speedLimiter": { "enabled": true, "kbps": 3000 } }));
         env.mgr.apply_speed_limiter();
-        let r = env.mgr.add(&json!({ "url": format!("{}/file.bin", SRV.base) })).unwrap();
+        let r = env.mgr.add(&json!({ "url": format!("{}/file-resume.bin", SRV.base) })).unwrap();
         let id = r["item"]["id"].as_str().unwrap().to_string();
         env.mgr.start(&id);
         sleep(600).await;
@@ -113,7 +113,8 @@ fn pause_and_resume_continues_from_saved_segments() {
         let done = finished(&env.mgr, &id);
         env.mgr.start(&id);
         let fin = done.await.unwrap_or_else(|it| panic!("{}", it["error"]));
-        assert!(!SRV.ranges.lock().unwrap().contains(&0), "resume should not restart at 0");
+        // Tests share SRV and run in parallel, so only this download's own requests count.
+        assert!(!SRV.ranges.lock().unwrap().contains(&("/file-resume.bin".to_string(), 0)), "resume should not restart at 0");
         assert!(read(&fin["savedPath"]) == **DATA);
         env.mgr.dispose();
     });

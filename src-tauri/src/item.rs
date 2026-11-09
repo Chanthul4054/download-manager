@@ -17,13 +17,25 @@ pub const INF: u64 = u64::MAX;
 pub struct Seg {
     pub start: u64,
     pub end: u64,
+    /// Bytes from `start` that have been written (they may still be in the OS cache).
     pub pos: u64,
+    /// Bytes from `start` known to be on the disk: `start <= synced <= pos`. Only this is saved
+    /// to the download list, so a power loss can never leave a saved position ahead of the data.
+    pub synced: u64,
 }
 
 pub type SegRef = Rc<RefCell<Seg>>;
 
 pub fn seg(start: u64, end: u64, pos: u64) -> SegRef {
-    Rc::new(RefCell::new(Seg { start, end, pos }))
+    Rc::new(RefCell::new(Seg { start, end, pos, synced: pos }))
+}
+
+impl Seg {
+    /// Moves the segment back to `p` (written and durable alike).
+    pub fn rewind(&mut self, p: u64) {
+        self.pos = p;
+        self.synced = p;
+    }
 }
 
 impl Serialize for Seg {
@@ -31,7 +43,8 @@ impl Serialize for Seg {
         let mut m = Map::new();
         m.insert("start".into(), self.start.into());
         m.insert("end".into(), if self.end == INF { Value::Null } else { self.end.into() });
-        m.insert("pos".into(), self.pos.into());
+        // The saved "pos" is the durable offset (same field name as ever, so old lists still load).
+        m.insert("pos".into(), self.synced.into());
         Value::Object(m).serialize(s)
     }
 }
@@ -47,7 +60,8 @@ impl<'de> Deserialize<'de> for Seg {
                 None
             }
         };
-        Ok(Seg { start: n("start").unwrap_or(0), end: n("end").unwrap_or(INF), pos: n("pos").unwrap_or(0) })
+        let pos = n("pos").unwrap_or(0);
+        Ok(Seg { start: n("start").unwrap_or(0), end: n("end").unwrap_or(INF), pos, synced: pos })
     }
 }
 

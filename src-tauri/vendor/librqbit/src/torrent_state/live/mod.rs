@@ -1282,9 +1282,9 @@ impl PeerConnectionHandler for &'_ PeerHandler {
         {
             handshake.metadata_size = Some(len);
         }
-        if self.state.shared.options.disable_pex {
-            handshake.m.ut_pex = None;
-        }
+        // OpenDM: with PEX off, ut_pex stays advertised. Setting it to None made every extended
+        // handshake fail to encode ("bencode doesn't support None"), so no peer connection survived.
+        // PEX off is enforced where it matters: no PEX is sent, and received peer lists are ignored.
 
         Ok(())
     }

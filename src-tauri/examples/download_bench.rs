@@ -2,7 +2,9 @@
 //! local bench server, started as a separate process so its CPU time is not counted.
 //!
 //!   cargo build --release --examples
-//!   target/release/examples/download_bench [--runs 3] [--only name,name] [--json out.json]
+//!   target/release/examples/download_bench [--runs 3] [--only name,name] [--json out.json] [--checkpoint <sec>]
+//!
+//! `huge-2GB-8conn` needs the server to hold 2 GB: run with BENCH_MAX_BYTES=2148532224.
 //!
 //! Results are for the loopback network only and say nothing about how fast a particular
 //! internet host will be.
@@ -42,7 +44,24 @@ fn scenarios() -> Vec<Scenario> {
         Scenario { name: "capped-32MB-4conn", files: one(format!("/file/{}?rate={}", 32 * MB, 4 * MB), 32 * MB), conns: 4 },
         Scenario { name: "capped-32MB-8conn", files: one(format!("/file/{}?rate={}", 32 * MB, 4 * MB), 32 * MB), conns: 8 },
         Scenario { name: "capped-32MB-16conn", files: one(format!("/file/{}?rate={}", 32 * MB, 4 * MB), 32 * MB), conns: 16 },
+        // Long enough for several checkpoints: 8 files at 8 MB/s each (~16 s), like a fast internet line.
+        Scenario { name: "long-8x128MB-1MBps", files: (0..8).map(|i| (format!("/file/{}?rate={}", 128 * MB + i, MB), 128 * MB + i)).collect(), conns: 8 },
+        // The most dirty data a checkpoint has to flush.
+        Scenario { name: "huge-2GB-8conn", files: one(format!("/file/{}", 2048 * MB), 2048 * MB), conns: 8 },
     ]
+}
+
+/// Bytes this process has written to files and devices so far.
+fn io_written() -> u64 {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessIoCounters, IO_COUNTERS};
+        let mut c = IO_COUNTERS::default();
+        let _ = GetProcessIoCounters(GetCurrentProcess(), &mut c);
+        return c.WriteTransferCount;
+    }
+    #[allow(unreachable_code)]
+    0
 }
 
 /// (CPU ms used by this process so far, current working set in bytes).
@@ -70,12 +89,17 @@ struct Run {
     cpu_per_gb: f64,
     peak_rss_mb: f64,
     loop_p99_ms: f64,
+    /// Checkpoint syncs: count, total and longest ms (all files of the run).
+    syncs: u64,
+    sync_ms: f64,
+    sync_max_ms: f64,
+    written_mb: f64,
     ok: usize,
     files: usize,
     errors: Vec<String>,
 }
 
-async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>) -> Run {
+async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>, checkpoint: Option<f64>) -> Run {
     let dir = std::env::temp_dir().join(format!("odm-bench-{}", opendm_lib::util::id()));
     let store = Store::new(&dir.join("data"));
     {
@@ -84,6 +108,9 @@ async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>) ->
         s["proxy"]["mode"] = json!("none");
         s["connection"]["maxConnections"] = json!(sc.conns);
         s["downloads"]["maxSimultaneous"] = json!(8);
+        if let Some(c) = checkpoint {
+            s["connection"]["checkpointSec"] = json!(c);
+        }
         let out = dir.join("out").to_string_lossy().into_owned();
         drop(s);
         for c in store.categories.borrow_mut().as_array_mut().unwrap() {
@@ -108,6 +135,7 @@ async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>) ->
         }
     });
     let (cpu0, _) = process_usage();
+    let io0 = io_written();
     let t0 = Instant::now();
     let finished: Rc<RefCell<Vec<(String, bool, Value)>>> = Rc::new(RefCell::new(Vec::new()));
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -140,11 +168,19 @@ async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>) ->
     let _ = rx.await;
     let wall = t0.elapsed().as_secs_f64() * 1000.0;
     let (cpu1, _) = process_usage();
+    let io1 = io_written();
     sampler.abort();
     mgr.dispose();
 
     let mut ok = 0;
     let mut errors = Vec::new();
+    let (mut syncs, mut sync_ms, mut sync_max_ms) = (0u64, 0f64, 0f64);
+    for (_, _, it) in finished.borrow().iter() {
+        let lr = &it["lastRun"];
+        syncs += lr["syncs"].as_u64().unwrap_or(0);
+        sync_ms += lr["syncMs"].as_f64().unwrap_or(0.0);
+        sync_max_ms = sync_max_ms.max(lr["syncMaxMs"].as_f64().unwrap_or(0.0));
+    }
     for (id, good, it) in finished.borrow().iter() {
         let bytes = sc.files[ids.iter().position(|x| x == id).unwrap()].1;
         if !good {
@@ -172,6 +208,10 @@ async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>) ->
         cpu_per_gb: cpu / (bytes as f64 / (1024.0 * MB as f64)),
         peak_rss_mb: peak_rss as f64 / MB as f64,
         loop_p99_ms: p99,
+        syncs,
+        sync_ms,
+        sync_max_ms,
+        written_mb: (io1 - io0) as f64 / MB as f64,
         ok,
         files: sc.files.len(),
         errors,
@@ -189,6 +229,7 @@ fn main() {
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
     let runs: usize = arg("--runs").and_then(|r| r.parse().ok()).unwrap_or(3);
     let only: Option<Vec<String>> = arg("--only").map(|o| o.split(',').map(String::from).collect());
+    let checkpoint: Option<f64> = arg("--checkpoint").and_then(|c| c.parse().ok());
 
     // --server <url> benchmarks against an already running server (e.g. to compare with the JS engine).
     let mut child = None;
@@ -218,8 +259,8 @@ fn main() {
                 }
             }
         }
-        println!("opendm (Rust) engine · runs {}\n", runs);
-        println!("{:<22}{:>10}{:>17}{:>8}{:>10}{:>8}{:>9}  integrity", "scenario", "MB/s(med)", "MB/s(min..max)", "wall s", "CPU ms/GB", "RSS MB", "loop p99");
+        println!("opendm (Rust) engine · runs {} · checkpoint {}\n", runs, checkpoint.map(|c| format!("{c} s")).unwrap_or_else(|| "default".into()));
+        println!("{:<22}{:>10}{:>17}{:>8}{:>10}{:>8}{:>9}{:>7}{:>9}{:>9}{:>9}  integrity", "scenario", "MB/s(med)", "MB/s(min..max)", "wall s", "CPU ms/GB", "RSS MB", "loop p99", "syncs", "sync ms", "sync max", "writ MB");
         let mut out = serde_json::Map::new();
         let mut warmed = false;
         for sc in scenarios() {
@@ -228,12 +269,12 @@ fn main() {
             }
             // One warm-up run so the disk and caches are not part of the first sample.
             if !warmed {
-                run_once(&base, &sc, &hashes).await;
+                run_once(&base, &sc, &hashes, checkpoint).await;
                 warmed = true;
             }
             let mut rs = Vec::new();
             for _ in 0..runs {
-                rs.push(run_once(&base, &sc, &hashes).await);
+                rs.push(run_once(&base, &sc, &hashes, checkpoint).await);
             }
             let mbps: Vec<f64> = rs.iter().map(|r| r.mbps).collect();
             let errors: Vec<String> = rs.iter().flat_map(|r| r.errors.clone()).collect();
@@ -245,6 +286,10 @@ fn main() {
                 "cpuPerGB": median(rs.iter().map(|r| r.cpu_per_gb).collect()),
                 "peakRssMB": rs.iter().map(|r| r.peak_rss_mb).fold(0.0, f64::max),
                 "loopP99ms": median(rs.iter().map(|r| r.loop_p99_ms).collect()),
+                "syncsPerRun": median(rs.iter().map(|r| r.syncs as f64).collect()),
+                "syncMsPerRun": median(rs.iter().map(|r| r.sync_ms).collect()),
+                "syncMaxMs": rs.iter().map(|r| r.sync_max_ms).fold(0.0, f64::max),
+                "writtenMBPerRun": median(rs.iter().map(|r| r.written_mb).collect()),
                 "ok": rs.iter().map(|r| r.ok).sum::<usize>(),
                 "files": rs.iter().map(|r| r.files).sum::<usize>(),
                 "errors": errors,
@@ -252,7 +297,7 @@ fn main() {
             let mut uniq: Vec<String> = errors.clone();
             uniq.dedup();
             println!(
-                "{:<22}{:>10.1}{:>17}{:>8.2}{:>10.0}{:>8.0}{:>9.1}  {}/{}{}",
+                "{:<22}{:>10.1}{:>17}{:>8.2}{:>10.0}{:>8.0}{:>9.1}{:>7.0}{:>9.0}{:>9.0}{:>9.0}  {}/{}{}",
                 sc.name,
                 r["mbps"].as_f64().unwrap(),
                 format!("{:.0}..{:.0}", r["mbpsMin"].as_f64().unwrap(), r["mbpsMax"].as_f64().unwrap()),
@@ -260,6 +305,10 @@ fn main() {
                 r["cpuPerGB"].as_f64().unwrap(),
                 r["peakRssMB"].as_f64().unwrap(),
                 r["loopP99ms"].as_f64().unwrap(),
+                r["syncsPerRun"].as_f64().unwrap(),
+                r["syncMsPerRun"].as_f64().unwrap(),
+                r["syncMaxMs"].as_f64().unwrap(),
+                r["writtenMBPerRun"].as_f64().unwrap(),
                 r["ok"],
                 r["files"],
                 if uniq.is_empty() { String::new() } else { format!(" {}", uniq.join("; ")) }

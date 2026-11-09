@@ -388,9 +388,18 @@ impl HlsDownload {
                     data = dec;
                 }
                 let path = std::path::Path::new(&self.seg_dir()).join(format!("{}.seg", i));
-                tokio::fs::write(path, &data).await?;
+                let len = data.len();
+                // On the disk before it is recorded as done, so a power loss cannot leave a "done" segment empty.
+                tokio::task::spawn_blocking(move || {
+                    use std::io::Write;
+                    let mut f = std::fs::File::create(path)?;
+                    f.write_all(&data)?;
+                    f.sync_data()
+                })
+                .await
+                .map_err(|e| Error::new(e.to_string()))??;
                 let bytes = js::num(&hls_get(&self.item, "bytes"));
-                hls_set(&self.item, "bytes", json!(if bytes.is_nan() { 0.0 } else { bytes } + data.len() as f64));
+                hls_set(&self.item, "bytes", json!(if bytes.is_nan() { 0.0 } else { bytes } + len as f64));
                 self.set_active(i, None);
                 Ok(())
             }

@@ -14,7 +14,7 @@ use tokio::io::AsyncReadExt;
 use tokio::task::JoinHandle;
 
 use super::limiter::{take_all, LimiterRef, RateLimiter, SpeedMeter};
-use super::{interval, open, sleep_ms, write_at, Ctx, Engine, EngineEvent, Fh, Meta, Sink};
+use super::{checkpoint, checkpoint_ms, checkpoints, file_len, interval, open, reconcile, sleep_ms, sync_file, write_at, Ctx, Engine, EngineEvent, Fh, Meta, Sink};
 use crate::error::{Error, Result};
 use crate::item::{seg, ItemRef, SegRef, INF};
 use crate::js;
@@ -39,6 +39,10 @@ pub struct FtpDownload {
     /// Cancelled by stop(): closes every connection, like `client.close()` on each client.
     close_all: RefCell<tokio_util::sync::CancellationToken>,
     timers: RefCell<Vec<JoinHandle<()>>>,
+    /// The open temp file, for checkpoints.
+    fh: RefCell<Option<Fh>>,
+    /// Set when a checkpoint could not flush the file; the download fails with it.
+    disk_failed: RefCell<Option<Error>>,
 }
 
 fn ftp_err(e: FtpError, host: &str, port: u16) -> Error {
@@ -77,6 +81,8 @@ impl FtpDownload {
             stopped: Cell::new(false),
             close_all: RefCell::new(tokio_util::sync::CancellationToken::new()),
             timers: RefCell::new(Vec::new()),
+            fh: RefCell::new(None),
+            disk_failed: RefCell::new(None),
         });
         *me.me.borrow_mut() = Rc::downgrade(&me);
         me
@@ -180,6 +186,12 @@ impl FtpDownload {
                 Ok(f) => f,
                 Err(_) => open(&temp, "w+").await?,
             };
+            // Resume from what was durable and is still in the file (nothing, if it was recreated).
+            let len = file_len(&fh).await?;
+            if let Some(segs) = &self.item.borrow().segments {
+                reconcile(segs, len);
+            }
+            *self.fh.borrow_mut() = Some(fh.clone());
             self.emit(EngineEvent::Status("Receiving data...".into()));
             let segs = self.item.borrow().segments.clone().unwrap_or_default();
             let mut reuse = Some(probe);
@@ -194,6 +206,9 @@ impl FtpDownload {
             let results = futures_join_all(runs).await;
             for r in results {
                 r?;
+            }
+            if let Some(e) = self.disk_failed.borrow().clone() {
+                return Err(e);
             }
             if self.stopped.get() {
                 return Err(Error::new("Stopped"));
@@ -211,6 +226,15 @@ impl FtpDownload {
         }
         .await;
         self.close_all.borrow().cancel();
+        let mut r = r;
+        let fh = self.fh.borrow_mut().take();
+        if let Some(fh) = fh {
+            let segs = self.item.borrow().segments.clone().unwrap_or_default();
+            if let (Err(e), true) = (checkpoint(&segs, sync_file(&fh)).await, r.is_ok()) {
+                let e = Error::from(e);
+                r = Err(Error::with_code(format!("Could not write the file: {}", e.message), e.code()));
+            }
+        }
         match r {
             Ok(()) => self.done("complete", None),
             Err(e) => self.done(if self.stopped.get() { "stopped" } else { "failed" }, Some(e)),
@@ -300,7 +324,7 @@ impl FtpDownload {
                 let b = s.borrow();
                 b.pos < b.end
             };
-            if !more || self.stopped.get() {
+            if !more || self.stopped.get() || self.disk_failed.borrow().is_some() {
                 break;
             }
             let close = self.close_all.borrow().clone();
@@ -328,7 +352,7 @@ impl FtpDownload {
                     let b = s.borrow();
                     b.pos >= b.end
                 };
-                if done || self.stopped.get() {
+                if done || self.stopped.get() || self.disk_failed.borrow().is_some() {
                     break;
                 }
                 tries += 1;
@@ -379,7 +403,18 @@ impl Engine for FtpDownload {
         let a = self.clone();
         let b = self.clone();
         self.timers.borrow_mut().push(interval(500, move || a.emit(EngineEvent::Progress(a.stats()))));
-        self.timers.borrow_mut().push(interval(3000, move || b.emit(EngineEvent::Persist)));
+        *self.disk_failed.borrow_mut() = None;
+        let c = self.clone();
+        let ms = checkpoint_ms(&self.ctx.store);
+        self.timers.borrow_mut().push(checkpoints(ms, move || Some((c.fh.borrow().clone()?, c.item.borrow().segments.clone()?)), move |r| {
+            if let Some((Err(e), _)) = r {
+                let e = Error::from(e);
+                *b.disk_failed.borrow_mut() = Some(Error::with_code(format!("Could not write the file: {}", e.message), e.code()));
+                b.close_all.borrow().cancel();
+            } else {
+                b.emit(EngineEvent::Persist);
+            }
+        }));
         tokio::task::spawn_local(self.run());
     }
 

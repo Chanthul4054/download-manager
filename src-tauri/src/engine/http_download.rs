@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::limiter::{perf_now, take_all, RateLimiter, LimiterRef, SpeedMeter};
 use super::net::{ReqOpts, Response};
-use super::{file_len, interval, open, set_len, sleep_ms, write_at, Ctx, Engine, EngineEvent, Fh, Meta, Sink, MAX_FAST_PIECE, MAX_PIECE};
+use super::{checkpoint, checkpoint_ms, checkpoints, file_len, interval, open, reconcile, set_len, sleep_ms, sync_file, write_at, Ctx, Engine, EngineEvent, Fh, Meta, Sink, MAX_FAST_PIECE, MAX_PIECE};
 use crate::error::{Error, Result};
 use crate::item::{seg, ItemRef, SegRef, INF};
 use crate::js;
@@ -106,6 +106,9 @@ struct Metrics {
     retries: u32,
     disk_ms: f64,
     peak_connections: usize,
+    syncs: u32,
+    sync_ms: f64,
+    sync_max_ms: f64,
 }
 
 pub struct HttpDownload {
@@ -214,13 +217,21 @@ impl HttpDownload {
             return Ok(());
         }
         match open(&temp, "r+").await {
-            Ok(f) => *self.fh.borrow_mut() = Some(f),
+            Ok(f) => {
+                // Resume from what was durable, and no further than the file actually reaches.
+                let len = file_len(&f).await?;
+                if let Some(segs) = &self.item.borrow().segments {
+                    reconcile(segs, len);
+                }
+                *self.fh.borrow_mut() = Some(f);
+            }
             Err(e) if e.code() == "ENOENT" => {
                 // Temp file vanished: any recorded progress is invalid.
                 if let Some(segs) = &self.item.borrow().segments {
                     for s in segs {
                         let mut s = s.borrow_mut();
-                        s.pos = s.start;
+                        let start = s.start;
+                        s.rewind(start);
                     }
                 }
                 *self.fh.borrow_mut() = Some(open(&temp, "w+").await?);
@@ -334,6 +345,18 @@ impl HttpDownload {
                 err = Some(e);
             }
         }
+        // Last checkpoint: what is saved as done must be on the disk, also when pausing.
+        let fh = self.fh.borrow().clone();
+        if let Some(fh) = fh {
+            let segs = self.item.borrow().segments.clone().unwrap_or_default();
+            let t = perf_now();
+            let r = checkpoint(&segs, sync_file(&fh)).await;
+            self.note_sync(perf_now() - t);
+            if let (Err(e), "complete") = (r, kind.as_str()) {
+                kind = "error".into();
+                err = Some(disk_error(e.into()));
+            }
+        }
         *self.fh.borrow_mut() = None;
         self.emit_progress();
         self.emit(EngineEvent::Persist);
@@ -351,6 +374,9 @@ impl HttpDownload {
                 "retries": m.retries,
                 "diskMs": m.disk_ms.round() as u64,
                 "peakConnections": m.peak_connections,
+                "syncs": m.syncs,
+                "syncMs": m.sync_ms.round() as u64,
+                "syncMaxMs": m.sync_max_ms.round() as u64,
                 "resumable": self.item.borrow().resumable == Some(true),
             })
         };
@@ -487,6 +513,31 @@ impl HttpDownload {
 
     fn set_fatal(&self, e: Error) {
         *self.fatal.borrow_mut() = Some(e);
+    }
+
+    fn note_sync(&self, ms: f64) {
+        let mut m = self.metrics.borrow_mut();
+        m.syncs += 1;
+        m.sync_ms += ms;
+        m.sync_max_ms = m.sync_max_ms.max(ms);
+    }
+
+    /// A periodic checkpoint finished: save the list, or stop if the disk refused the flush.
+    fn checkpointed(&self, r: Option<(std::io::Result<()>, f64)>) {
+        match r {
+            Some((Err(e), ms)) => {
+                self.note_sync(ms);
+                self.set_fatal(disk_error(e.into()));
+                for w in self.workers.borrow().iter() {
+                    w.abort.cancel();
+                }
+            }
+            Some((Ok(()), ms)) => {
+                self.note_sync(ms);
+                self.emit(EngineEvent::Persist);
+            }
+            None => self.emit(EngineEvent::Persist),
+        }
     }
 
     fn fatal_set(&self) -> bool {
@@ -1019,6 +1070,10 @@ impl HttpDownload {
     }
 }
 
+fn disk_error(e: Error) -> Error {
+    Error::with_code(format!("Could not write the file: {}", e.message), e.code())
+}
+
 /// `settings.connection.connectionRetries ?? 20`
 fn retries_setting(v: &Value) -> f64 {
     if v.is_null() {
@@ -1058,7 +1113,9 @@ impl Engine for HttpDownload {
         let b = self.clone();
         let mut timers = self.timers.borrow_mut();
         timers.push(interval(500, move || a.emit_progress()));
-        timers.push(interval(3000, move || b.emit(EngineEvent::Persist)));
+        let ms = checkpoint_ms(&self.ctx.store);
+        let c = self.clone();
+        timers.push(checkpoints(ms, move || Some((c.fh.borrow().clone()?, c.item.borrow().segments.clone()?)), move |r| b.checkpointed(r)));
         drop(timers);
         tokio::task::spawn_local(self.run());
     }

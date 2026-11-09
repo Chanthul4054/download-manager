@@ -1060,7 +1060,7 @@ impl App {
                 M::Sep,
                 item_acc("cmd:options", "&Options...", "CmdOrCtrl+,"),
             ]),
-            sub("&View", vec![
+            sub("&View", [
                 check("hide-categories", "Hide &categories", !js::truthy(&s["appearance"]["showCategories"])),
                 sub(
                     "&Arrange files",
@@ -1089,9 +1089,11 @@ impl App {
                     item("font:reset", "Reset to default font"),
                 ]),
                 sub("&Language", vec![check("lang:en", "&English", true)]),
-                M::Sep,
-                item_acc("devtools", "Developer tools", "CmdOrCtrl+Shift+I"),
-            ]),
+            ]
+            .into_iter()
+            // Developer tools only in debug builds: release builds are compiled without Tauri's devtools feature.
+            .chain(if cfg!(debug_assertions) { vec![M::Sep, item_acc("devtools", "Developer tools", "CmdOrCtrl+Shift+I")] } else { vec![] })
+            .collect()),
             sub("&Help", vec![
                 item_acc("cmd:help", "H&elp contents", "F1"),
                 item("cmd:help:extension", "Browser &extension setup..."),
@@ -1232,6 +1234,7 @@ impl App {
                 self.save_settings(&json!({ "appearance": { "fontSize": 13 } }));
             }
             "lang:en" => self.build_menu(),
+            #[cfg(debug_assertions)]
             "devtools" => {
                 if let Some(w) = self.handle.webview_windows().values().find(|w| w.is_focused().unwrap_or(false)) {
                     if w.is_devtools_open() {
