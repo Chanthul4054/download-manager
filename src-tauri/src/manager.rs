@@ -951,6 +951,10 @@ impl DownloadManager {
         }
     }
 
+    /// "Keep partial" for a download that failed because the file changed on the server.
+    // shortcut: empty stub so the checkpoint-2 tests compile; implemented with R1 at checkpoint 3.
+    pub fn keep_partial(&self, _id: &str) {}
+
     /// Properties dialog edits, including "refresh download address" (new URL keeps progress).
     pub async fn update(&self, id: &str, patch: &Value) -> Result<Value> {
         let Some(item) = self.get(id) else { return Ok(Value::Null) };
