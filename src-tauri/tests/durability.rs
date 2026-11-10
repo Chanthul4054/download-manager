@@ -3,15 +3,19 @@
 
 mod common;
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
 use common::*;
+use opendm_lib::manager::MgrEvent;
 use serde_json::{json, Value};
 
 const MB: usize = 1024 * 1024;
 static DATA: LazyLock<Arc<Vec<u8>>> = LazyLock::new(|| Arc::new(random_bytes(8 * MB)));
-static SRV: LazyLock<TestServer> = LazyLock::new(|| TestServer::start(bench_handler(DATA.clone())));
+static STATE: LazyLock<Arc<BenchState>> = LazyLock::new(BenchState::new);
+static SRV: LazyLock<TestServer> = LazyLock::new(|| TestServer::start(bench_handler_with(DATA.clone(), STATE.clone())));
 
 fn settings() -> Value {
     json!({ "connection": { "maxConnections": 4, "checkpointSec": 1 }, "downloads": { "maxSimultaneous": 8 } })
@@ -120,10 +124,23 @@ fn pausing_saves_the_exact_position_and_resumes_intact() {
 /// Runs a download, captures the saved list mid-way as a crash leaves it, lets `damage` change the
 /// temp file, restarts over the same folder and checks the finished file.
 fn crash_and_resume(damage: impl FnOnce(&Path, &Value)) {
+    crash_and_resume_with(false, damage, |_, _| {});
+}
+
+/// `crash_and_resume`, optionally as a query-range (`&range=a-b`) download. `check` gets the
+/// snapshot and the requests made after the restart.
+fn crash_and_resume_with(query: bool, damage: impl FnOnce(&Path, &Value), check: impl FnOnce(&Value, &[Logged])) {
     run(async {
         let env = setup("odm-dur-", settings());
         let size = 6 * MB;
-        let id = add(&env, format!("{}/file/{}?rate={}", SRV.base, size, 256 * 1024));
+        let tag = format!("t={}", opendm_lib::util::id());
+        let id = add(&env, format!("{}/file/{}?rate={}&{}", SRV.base, size, 256 * 1024, tag));
+        if query {
+            let it = env.mgr.get(&id).unwrap();
+            let mut b = it.borrow_mut();
+            b.range_mode = Some("query".into());
+            b.size = Some(size as u64);
+        }
         env.mgr.start(&id);
         let list = env.store.file("downloads");
         let snapshot = loop {
@@ -151,10 +168,13 @@ fn crash_and_resume(damage: impl FnOnce(&Path, &Value)) {
         let item = mgr.get(&id).expect("download restored");
         assert_eq!(item.borrow().status, "paused");
         assert_eq!(item.borrow().downloaded, saved_progress(&snapshot), "shown progress matches the durable progress");
+        let n = STATE.requests(&tag).len();
         let end = finished(&mgr, &id);
         mgr.start(&id);
         let it = end.await.unwrap_or_else(|it| panic!("{}", it["error"]));
         assert!(read(&it["savedPath"]) == DATA[..size], "resumed file differs from the server copy");
+        let after: Vec<Logged> = STATE.requests(&tag).into_iter().skip(n).collect();
+        check(&snapshot, &after);
         mgr.dispose();
     });
 }
@@ -225,6 +245,100 @@ fn a_list_that_cannot_be_saved_does_not_stop_downloads_or_litter_the_folder() {
         env.store.flush("downloads").await.unwrap();
         let saved = saved(&list).unwrap();
         assert_eq!(saved[0]["status"], json!("complete"));
+        env.mgr.dispose();
+    });
+}
+
+// Overlap verification (R2): before continuing a segment, the bytes just before its position are
+// fetched again and compared with the temp file.
+
+/// Corrupts the 16 bytes before the position of the segment with the most progress. Returns that
+/// segment's start and the starts of the other segments that had more than 64 bytes.
+fn corrupt_before_cursor(temp: &Path, snap: &Value) -> (u64, Vec<u64>) {
+    let segs: Vec<(u64, u64)> = snap["segments"].as_array().unwrap().iter().map(|s| (s["start"].as_u64().unwrap(), s["pos"].as_u64().unwrap())).collect();
+    let &(start, pos) = segs.iter().max_by_key(|(a, p)| p - a).unwrap();
+    assert!(pos - start >= 64, "not enough progress to corrupt");
+    let mut file = std::fs::read(temp).unwrap();
+    for b in &mut file[pos as usize - 16..pos as usize] {
+        *b ^= 0xFF;
+    }
+    std::fs::write(temp, file).unwrap();
+    (start, segs.iter().filter(|(a, p)| *a != start && p - a > 64).map(|(a, _)| *a).collect())
+}
+
+fn corrupt_bytes_before_a_cursor_rewind_only_that_segment(query: bool) {
+    let hit = std::cell::Cell::new((0u64, Vec::new()));
+    crash_and_resume_with(
+        query,
+        |temp, snap| hit.set(corrupt_before_cursor(temp, snap)),
+        |_, after| {
+            let (start, others) = hit.take();
+            assert!(after.iter().any(|l| l.start() == Some(start)), "segment {start} was not downloaded again from its start");
+            for a in others {
+                assert!(after.iter().all(|l| l.start() != Some(a)), "intact segment {a} was rewound too");
+            }
+        },
+    );
+}
+
+#[test]
+fn corrupt_bytes_just_before_a_saved_offset_rewind_only_that_segment() {
+    corrupt_bytes_before_a_cursor_rewind_only_that_segment(false);
+}
+
+#[test]
+fn in_query_range_mode_corrupt_bytes_before_a_saved_offset_rewind_only_that_segment() {
+    corrupt_bytes_before_a_cursor_rewind_only_that_segment(true);
+}
+
+#[test]
+fn a_second_overlap_mismatch_in_one_session_fails_with_echanged() {
+    run(async {
+        let env = setup("odm-dur-", json!({ "connection": { "maxConnections": 1 } }));
+        // Every response stops after 1 MB, and every range after byte 0 starts with 64 wrong bytes.
+        let id = add(&env, format!("{}/file/{}?badoverlap&cutevery={}&t=ov-twice", SRV.base, 4 * MB, MB));
+        let end = tokio::time::timeout(std::time::Duration::from_secs(60), finished(&env.mgr, &id));
+        env.mgr.start(&id);
+        let it = end.await.expect("no infinite loop").expect_err("bytes that do not match twice must not complete");
+        assert_eq!(it["errorCode"], "ECHANGED", "{}", it["error"]);
+        let n = STATE.requests("t=ov-twice").len();
+        assert!(n <= 8, "{n} requests");
+        env.mgr.dispose();
+    });
+}
+
+#[test]
+fn downloaded_is_exactly_the_file_size_and_progress_never_goes_backwards() {
+    run(async {
+        let env = setup("odm-dur-", settings());
+        let size = 6 * MB + 123;
+        // A dropped first connection and a pause: two kinds of continuation.
+        let id = add(&env, format!("{}/file/{}?truncate&rate={}&t=ov-count", SRV.base, size, 512 * 1024));
+        let seen = Rc::new(RefCell::new(Vec::<u64>::new()));
+        let (s2, id2) = (seen.clone(), id.clone());
+        let sub = env.mgr.events.on(move |e| {
+            if let MgrEvent::Progress(i, st) = e {
+                if *i == id2 {
+                    s2.borrow_mut().push(st["downloaded"].as_u64().unwrap_or(0));
+                }
+            }
+        });
+        env.mgr.start(&id);
+        while env.mgr.get(&id).unwrap().borrow().segments_downloaded() <= 2 * MB as u64 {
+            sleep(50).await;
+        }
+        env.mgr.stop(&id, None);
+        env.mgr.wait_stopped(&id).await;
+        let end = finished(&env.mgr, &id);
+        env.mgr.start(&id);
+        let it = end.await.unwrap_or_else(|it| panic!("{}", it["error"]));
+        env.mgr.events.off(sub);
+        assert!(read(&it["savedPath"]) == DATA[..size]);
+        assert_eq!(it["downloaded"], json!(size), "downloaded is not the file size");
+        let seen = seen.borrow();
+        assert!(seen.len() >= 2, "no progress reported");
+        assert!(seen.iter().all(|&d| d <= size as u64), "progress past 100 %: {:?}", seen.iter().max());
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "progress went backwards: {seen:?}");
         env.mgr.dispose();
     });
 }
