@@ -158,6 +158,8 @@ pub struct Response {
     /// The request went to an HTTP forward proxy with the full address as its path.
     pub via_forward_proxy: bool,
     inner: Option<reqwest::Response>,
+    /// Body bytes handed back by `unread`.
+    unread: Option<Bytes>,
 }
 
 impl Response {
@@ -167,6 +169,9 @@ impl Response {
 
     /// The next body chunk; None at the end. Fails with an abort error when `signal` fires.
     pub async fn chunk(&mut self, signal: Option<&Signal>) -> Result<Option<Bytes>> {
+        if let Some(b) = self.unread.take() {
+            return Ok(Some(b));
+        }
         let Some(inner) = self.inner.as_mut() else { return Ok(None) };
         let read = inner.chunk();
         let r = match signal {
@@ -179,9 +184,17 @@ impl Response {
         r.map_err(|e| map_err(&e, true, ""))
     }
 
+    /// Hands back body bytes: the next `chunk` returns them first.
+    pub fn unread(&mut self, b: Bytes) {
+        if !b.is_empty() {
+            self.unread = Some(b);
+        }
+    }
+
     /// Closes the response (`res.destroy()` / `res.resume()`).
     pub fn destroy(&mut self) {
         self.inner = None;
+        self.unread = None;
     }
 }
 
@@ -408,6 +421,7 @@ impl NetContext {
                 redirects: hop as u32,
                 via_forward_proxy: proxy.kind == ProxyKind::Http && !secure,
                 inner: Some(res),
+                unread: None,
             });
         }
         Err(Error::new("Too many redirects"))

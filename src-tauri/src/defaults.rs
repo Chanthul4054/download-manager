@@ -91,6 +91,7 @@ pub fn default_settings() -> Value {
             "existingFileAction": "rename",
             "userAgent": "",
             "ignoreModTimeChanges": false,
+            "autoRestartOnChange": false,
             "showQueuePanelOnLater": true,
             "maxSimultaneous": 8,
         },

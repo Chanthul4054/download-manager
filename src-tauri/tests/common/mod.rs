@@ -1,5 +1,5 @@
 //! Test helpers: a small HTTP/1.1 server (on its own thread) that can pace, truncate and redirect
-//! responses, a port of bench/bench-server.js, and setup for a manager in a temporary folder.
+//! responses, a port of bench/bench-server.js (now examples/bench_server.rs), and setup for a manager in a temporary folder.
 #![allow(dead_code)]
 
 use std::cell::{Cell, RefCell};
@@ -188,15 +188,107 @@ fn reason(s: u16) -> &'static str {
     }
 }
 
-/// bench/bench-server.js: /file/<bytes>[?norange][&rate=][&badrange][&truncate], /redirect/<n>/<rest>,
-/// /status/<code>, /flaky/<failures>/<code>/file/<bytes>. Every file is a prefix of `data`.
+/// One request as the bench handler saw it (after its response was chosen).
+#[derive(Clone, Debug)]
+pub struct Logged {
+    pub url: String,
+    pub host: String,
+    pub range: Option<String>,
+    pub if_range: Option<String>,
+    pub status: u16,
+}
+
+impl Logged {
+    /// First byte asked for, from the Range header or a `range=a-b` query parameter.
+    pub fn start(&self) -> Option<u64> {
+        let r = self.range.as_deref().and_then(|r| r.strip_prefix("bytes=")).map(String::from).or_else(|| {
+            let q = self.url.split_once('?')?.1;
+            url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "range").map(|(_, v)| v.into_owned())
+        })?;
+        r.split('-').next()?.parse().ok()
+    }
+}
+
+/// State shared by a `bench_handler_with` server: the request log, the version of each
+/// `/versioned/<key>/` file and the targets `/althost/` alternates between.
+#[derive(Default)]
+pub struct BenchState {
+    log: Mutex<Vec<Logged>>,
+    versions: Mutex<HashMap<String, u64>>,
+    pub hosts: Mutex<Vec<String>>,
+    hops: Mutex<usize>,
+}
+
+impl BenchState {
+    pub fn new() -> Arc<BenchState> {
+        Arc::new(BenchState::default())
+    }
+    /// The file behind `/versioned/<key>/` changes: new bytes, ETag and Last-Modified.
+    pub fn bump(&self, key: &str) {
+        *self.versions.lock().unwrap().entry(key.to_string()).or_insert(0) += 1;
+    }
+    fn version(&self, key: &str) -> u64 {
+        self.versions.lock().unwrap().get(key).copied().unwrap_or(0)
+    }
+    /// Logged requests whose address contains `needle`, oldest first.
+    pub fn requests(&self, needle: &str) -> Vec<Logged> {
+        self.log.lock().unwrap().iter().filter(|l| l.url.contains(needle)).cloned().collect()
+    }
+}
+
+/// The bytes `/versioned/` serves at version `v` (version 0 is `data` itself).
+pub fn version_bytes(data: &[u8], v: u64) -> Vec<u8> {
+    data.iter().map(|b| b ^ (v as u8)).collect()
+}
+
+/// bench/bench-server.js (now examples/bench_server.rs): /file/<bytes>[?norange][&rate=][&badrange][&truncate],
+/// /redirect/<n>/<rest>, /status/<code>, /flaky/<failures>/<code>/file/<bytes>. Every file is a prefix of `data`.
+///
+/// Test-only modes that examples/bench_server.rs does not have (yet):
+/// - If-Range is evaluated on every Range request (an entity tag compares strongly, so `W/` never
+///   matches; a date must equal Last-Modified). A mismatch answers 200 with the whole file.
+/// - `?etag=<v>`: ETag `"<v>"`. `?weaketag`: the ETag is weak (`W/"…"`). `?etagbyhost`: the ETag
+///   includes the Host header, like CDN edges that disagree.
+/// - `?ignoreifrange`: honours Range and ignores If-Range. `?ifrange200`: answers 200 to every
+///   request that carries If-Range (a server that mishandles it).
+/// - `/versioned/<key>/…`: bytes, ETag and Last-Modified change with `BenchState::bump(key)`.
+/// - `/althost/<rest>`: redirects to `BenchState::hosts` in turn (the first request to the first).
+/// - `range=a-b` query parameter without a Range header: a googlevideo-style 200 with those bytes.
+/// - `?badoverlap`: the first 64 bytes of a 206 that starts after 0 are wrong.
+/// - `?cutevery=<n>`: every response closes the connection after `n` body bytes.
 pub fn bench_handler(data: Arc<Vec<u8>>) -> Handler {
+    bench_handler_with(data, BenchState::new())
+}
+
+pub fn bench_handler_with(data: Arc<Vec<u8>>, st: Arc<BenchState>) -> Handler {
+    let inner = bench_responder(data, st.clone());
+    Arc::new(move |req: &Req| {
+        let r = inner(req);
+        st.log.lock().unwrap().push(Logged {
+            url: req.url.clone(),
+            host: req.header("host").unwrap_or("").to_string(),
+            range: req.header("range").map(String::from),
+            if_range: req.header("if-range").map(String::from),
+            status: r.status,
+        });
+        r
+    })
+}
+
+fn bench_responder(data: Arc<Vec<u8>>, st: Arc<BenchState>) -> Handler {
     let flaky: Arc<Mutex<HashMap<String, u32>>> = Arc::new(Mutex::new(HashMap::new()));
     Arc::new(move |req: &Req| {
         let path = req.path().to_string();
         let mut parts: Vec<String> = path.split('/').filter(|s| !s.is_empty()).map(String::from).collect();
         let search = req.url.split_once('?').map(|(_, q)| format!("?{}", q)).unwrap_or_default();
         match parts.first().map(|s| s.as_str()) {
+            Some("althost") => {
+                let hosts = st.hosts.lock().unwrap().clone();
+                let mut n = st.hops.lock().unwrap();
+                let target = hosts[*n % hosts.len()].clone();
+                *n += 1;
+                return Resp::new(302, "").header("Location", format!("{}/{}{}", target, parts[1..].join("/"), search));
+            }
             Some("redirect") => {
                 let n: u32 = parts[1].parse().unwrap_or(1);
                 let rest = parts[2..].join("/") + &search;
@@ -231,15 +323,56 @@ pub fn bench_handler(data: Arc<Vec<u8>>) -> Handler {
             }
             _ => {}
         }
+        let mut version = 0;
+        if parts.first().map(|s| s.as_str()) == Some("versioned") && parts.len() > 2 {
+            version = st.version(&parts[1]);
+            parts.drain(..2);
+        }
         if parts.first().map(|s| s.as_str()) != Some("file") {
             return Resp::new(404, "");
         }
         let size = parts[1].parse::<usize>().unwrap_or(0).min(data.len());
         let rate: u64 = req.query("rate").and_then(|r| r.parse().ok()).unwrap_or(0);
-        let body = &data[..size];
-        let base = |r: Resp| r.header("Content-Type", "application/octet-stream").header("ETag", format!("\"{}\"", size)).header("Last-Modified", "Mon, 01 Jan 2024 00:00:00 GMT");
+        let cut_every: Option<usize> = req.query("cutevery").and_then(|n| n.parse().ok());
+        let bytes = |a: usize, b: usize| {
+            let s = &data[a..=b];
+            if version > 0 { version_bytes(s, version) } else { s.to_vec() }
+        };
+        let mut tag = req.query("etag").unwrap_or_else(|| if version > 0 { format!("{}-v{}", size, version) } else { size.to_string() });
+        if req.has_query("etagbyhost") {
+            tag = format!("{}@{}", tag, req.header("host").unwrap_or(""));
+        }
+        let etag = if req.has_query("weaketag") { format!("W/\"{}\"", tag) } else { format!("\"{}\"", tag) };
+        let last_mod = format!("Mon, 01 Jan 2024 00:00:{:02} GMT", version % 60);
+        let base = |r: Resp| r.header("Content-Type", "application/octet-stream").header("ETag", &etag).header("Last-Modified", &last_mod);
+        // Close after `n` body bytes on every response.
+        let cut_to = |r: &mut Resp| {
+            if let Some(n) = cut_every.filter(|n| r.body.len() > *n) {
+                r.body.truncate(n);
+                r.cut = true;
+            }
+        };
+        if let Some(q) = req.query("range").filter(|_| req.header("range").is_none() && size > 0) {
+            let (a, b) = q.split_once('-').unwrap_or(("0", ""));
+            let a: usize = a.parse().unwrap_or(0);
+            let b: usize = b.parse::<usize>().unwrap_or(size - 1).min(size - 1);
+            if a > b {
+                return Resp::new(416, "");
+            }
+            let mut r = base(Resp::new(200, bytes(a, b)));
+            r.rate = rate;
+            cut_to(&mut r);
+            return r;
+        }
+        let if_range_ok = match req.header("if-range") {
+            None => true,
+            Some(_) if req.has_query("ignoreifrange") => true,
+            Some(_) if req.has_query("ifrange200") => false,
+            Some(x) if x.starts_with('"') || x.starts_with("W/") => !x.starts_with("W/") && !etag.starts_with("W/") && x == etag,
+            Some(x) => x == last_mod,
+        };
         let range = req.header("range").and_then(|r| r.strip_prefix("bytes=")).map(|r| r.to_string());
-        if let Some(rg) = range.filter(|_| !req.has_query("norange")) {
+        if let Some(rg) = range.filter(|_| !req.has_query("norange") && if_range_ok) {
             let (a, b) = rg.split_once('-').unwrap_or(("0", ""));
             let mut a: usize = a.parse().unwrap_or(0);
             let b: usize = if b.is_empty() { size - 1 } else { b.parse::<usize>().unwrap_or(size - 1).min(size - 1) };
@@ -250,18 +383,25 @@ pub fn bench_handler(data: Arc<Vec<u8>>) -> Handler {
             if req.has_query("badrange") {
                 a = 0;
             }
-            let slice = &body[a..=b];
+            let mut slice = bytes(a, b);
+            if req.has_query("badoverlap") && a > 0 {
+                for x in slice.iter_mut().take(64) {
+                    *x ^= 0xFF;
+                }
+            }
             let key = format!("cut:{}", req.url);
             let cut = req.has_query("truncate") && a == 0 && !flaky.lock().unwrap().contains_key(&key);
             if cut {
                 flaky.lock().unwrap().insert(key, 1);
+                slice.truncate(slice.len() / 2);
             }
-            let mut r = base(Resp::new(206, if cut { slice[..slice.len() / 2].to_vec() } else { slice.to_vec() }))
+            let mut r = base(Resp::new(206, slice))
                 .header("Accept-Ranges", "bytes")
                 .header("Content-Range", format!("bytes {}-{}/{}", a, b, size))
                 .header("Content-Length", (b - a + 1).to_string());
             r.rate = rate;
             r.cut = cut;
+            cut_to(&mut r);
             return r;
         }
         let key = format!("cut:{}", req.url);
@@ -269,9 +409,14 @@ pub fn bench_handler(data: Arc<Vec<u8>>) -> Handler {
         if cut {
             flaky.lock().unwrap().insert(key, 1);
         }
-        let mut r = base(Resp::new(200, if cut { body[..size / 2].to_vec() } else { body.to_vec() })).header("Content-Length", size.to_string());
+        let mut body = if size > 0 { bytes(0, size - 1) } else { Vec::new() };
+        if cut {
+            body.truncate(size / 2);
+        }
+        let mut r = base(Resp::new(200, body)).header("Content-Length", size.to_string());
         r.rate = rate;
         r.cut = cut;
+        cut_to(&mut r);
         r
     })
 }

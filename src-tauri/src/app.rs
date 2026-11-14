@@ -47,7 +47,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const INVOKE: &[&str] = &[
     "state", "pending",
-    "dl:describe", "dl:add", "dl:addMany", "dl:start", "dl:stop", "dl:stopAll", "dl:remove", "dl:removeCompleted", "dl:redownload",
+    "dl:describe", "dl:add", "dl:addMany", "dl:start", "dl:stop", "dl:stopAll", "dl:remove", "dl:removeCompleted", "dl:redownload", "dl:keepPartial",
     "dl:update", "dl:stats", "dl:item", "dl:open", "dl:openFolder", "dl:progressWindow", "dl:refreshAddress", "dl:drag",
     "q:list", "q:create", "q:update", "q:remove", "q:start", "q:stop", "q:addItems", "q:removeItems", "q:move",
     "cats:save", "cats:reset", "settings:save", "settings:replaceList", "settings:reset",
@@ -1730,6 +1730,10 @@ impl App {
                 let id = js::str_of(&a(0));
                 self.interactive.borrow_mut().insert(id.clone());
                 m.redownload(&id, true).await;
+                Value::Null
+            }
+            "dl:keepPartial" => {
+                m.keep_partial(&js::str_of(&a(0)));
                 Value::Null
             }
             "dl:update" => m.update(&js::str_of(&a(0)), &a(1)).await?,

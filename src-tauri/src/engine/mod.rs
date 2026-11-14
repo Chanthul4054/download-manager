@@ -184,6 +184,29 @@ pub async fn write_at(f: &Fh, buf: bytes::Bytes, pos: u64) -> Result<()> {
     tokio::task::spawn_blocking(move || write_at_sync(&f, &buf, pos)).await.map_err(|e| Error::new(e.to_string()))?.map_err(Error::from)
 }
 
+/// Reads exactly `len` bytes at `pos`.
+pub async fn read_at(f: &Fh, pos: u64, len: usize) -> Result<Vec<u8>> {
+    let f = f.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut buf = vec![0u8; len];
+        let mut done = 0;
+        while done < len {
+            #[cfg(windows)]
+            let n = std::os::windows::fs::FileExt::seek_read(&*f, &mut buf[done..], pos + done as u64)?;
+            #[cfg(unix)]
+            let n = std::os::unix::fs::FileExt::read_at(&*f, &mut buf[done..], pos + done as u64)?;
+            if n == 0 {
+                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "read past the end of the file"));
+            }
+            done += n;
+        }
+        Ok(buf)
+    })
+    .await
+    .map_err(|e| Error::new(e.to_string()))?
+    .map_err(Error::from)
+}
+
 pub async fn set_len(f: &Fh, len: u64) -> Result<()> {
     let f = f.clone();
     tokio::task::spawn_blocking(move || f.set_len(len)).await.map_err(|e| Error::new(e.to_string()))?.map_err(Error::from)

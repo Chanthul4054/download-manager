@@ -23,6 +23,7 @@ export interface Channels {
   'dl:remove': [[ids: string[], deleteFiles: boolean], Json];
   'dl:removeCompleted': [[], number];
   'dl:redownload': [[id: string], Json];
+  'dl:keepPartial': [[id: string], Json];
   'dl:update': [[id: string, patch: Record<string, unknown>], DownloadItem];
   'dl:stats': [[id: string], DownloadStats | null];
   'dl:item': [[id: string], DownloadItem | null];
