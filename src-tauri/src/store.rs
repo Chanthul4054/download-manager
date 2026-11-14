@@ -410,4 +410,31 @@ mod load_tests {
         assert_eq!(mode("settings.json.bak"), 0o600);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // Per-item event log (R9).
+
+    #[test]
+    fn the_event_log_keeps_the_last_50_entries_and_survives_a_restart() {
+        let dir = fresh("log");
+        std::fs::write(dir.join("downloads.json"), LIST).unwrap();
+        let s = Store::new(&dir);
+        {
+            let d = s.downloads.borrow();
+            let mut it = d[0].borrow_mut();
+            for i in 0..60 {
+                it.log("test", format!("entry {i}"));
+            }
+            it.log("test", "é".repeat(400));
+        }
+        block(s.flush("downloads")).unwrap();
+        let again = Store::new(&dir);
+        let d = again.downloads.borrow();
+        let log = &d[0].borrow().log;
+        assert_eq!(log.len(), 50, "the log is not capped at 50 entries");
+        assert_eq!(log[0].text, "entry 11", "the oldest entries were not the ones dropped");
+        assert_eq!(log[49].text.chars().count(), 300, "a long text was not cut to 300 characters");
+        assert_eq!(log[48].kind, "test");
+        assert!(log[48].ts_ms > 1.6e12, "no timestamp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

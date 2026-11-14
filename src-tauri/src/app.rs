@@ -1745,6 +1745,15 @@ impl App {
                     let b = it.borrow();
                     v["auth"] = json!(b.auth);
                     v["cookies"] = json!(b.cookies);
+                    // The event log, with the entries of a video download's parts in time order.
+                    let mut log = b.log.clone();
+                    for p in b.parts.iter().flatten() {
+                        let p = p.borrow();
+                        let label = p.label.clone().or(p.role.clone()).unwrap_or_else(|| "part".into());
+                        log.extend(p.log.iter().map(|e| crate::item::LogEntry { text: format!("[{}] {}", label, e.text), ..e.clone() }));
+                    }
+                    log.sort_by(|x, y| x.ts_ms.total_cmp(&y.ts_ms));
+                    v["log"] = json!(log);
                     v
                 }
                 None => Value::Null,
@@ -2248,7 +2257,7 @@ impl App {
             r.stop();
         }
         self.link_grabber.dispose();
-        self.manager.stop_all();
+        self.manager.stop_all_as("app exit");
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
         while self.manager.active_count() > 0 && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(100)).await;

@@ -628,7 +628,7 @@ impl GrabberRun {
             .map(|a| a.iter().filter(|f| js::s(&f["status"]) == "downloading" && js::truthy(&f["itemId"])).map(|f| js::str_of(&f["itemId"])).collect())
             .unwrap_or_default();
         for id in downloading {
-            self.manager.stop(&id, None);
+            self.manager.stop_as(&id, None, "the site grabber");
         }
     }
 }

@@ -91,6 +91,21 @@ pub struct ExtraFile {
     pub name: String,
 }
 
+const LOG_MAX: usize = 50;
+const LOG_TEXT_MAX: usize = 300;
+
+/// One line of a download's event log.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LogEntry {
+    #[serde(default)]
+    pub ts_ms: f64,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub text: String,
+}
+
 pub type ItemRef = Rc<RefCell<Item>>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -189,6 +204,12 @@ pub struct Item {
     /// and never restarts by itself.
     #[serde(default, deserialize_with = "de_bool", skip_serializing_if = "is_false")]
     pub kept_partial: bool,
+    /// Who asked for the stop in progress (see `DownloadManager::stop_as`).
+    #[serde(skip)]
+    pub pending_by: Option<String>,
+    /// What happened to this download, oldest first (see `Item::log`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log: Vec<LogEntry>,
     #[serde(default, deserialize_with = "de_opt_string", skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string", skip_serializing_if = "Option::is_none")]
@@ -229,6 +250,21 @@ fn de_auth<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Auth>, D::Error> {
 impl Item {
     pub fn kind(&self) -> &str {
         self.kind.as_deref().unwrap_or("")
+    }
+
+    /// Adds an entry to the event log: the last `LOG_MAX` entries are kept, each cut to
+    /// `LOG_TEXT_MAX` characters. The one way to write the log, so entries stay uniform. Never
+    /// put a full address in `text` (query strings carry tokens): hosts only.
+    pub fn log(&mut self, kind: &str, text: impl Into<String>) {
+        let mut text: String = text.into();
+        if let Some((i, _)) = text.char_indices().nth(LOG_TEXT_MAX) {
+            text.truncate(i);
+        }
+        if self.log.len() >= LOG_MAX {
+            let extra = self.log.len() + 1 - LOG_MAX;
+            self.log.drain(..extra);
+        }
+        self.log.push(LogEntry { ts_ms: now_ms(), kind: kind.to_string(), text });
     }
 
     /// Bytes received across all segments (or the plain counter for a download without them).

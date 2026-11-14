@@ -166,6 +166,8 @@ impl DownloadManager {
         let mut v = it.to_value();
         let o = v.as_object_mut().unwrap();
         o.remove("segments");
+        // The event log goes out with `dl:item` only, not with every change of every download.
+        o.remove("log");
         o.remove("auth");
         o.remove("cookies");
         o.remove("parts");
@@ -232,7 +234,7 @@ impl DownloadManager {
                         qp.push(id.clone());
                     }
                 }
-                self.stop(&id, Some("Waiting: download limit reached"));
+                self.stop_as(&id, Some("Waiting: download limit reached"), "the download limit");
             }
             if !self.quota_paused.borrow().is_empty() {
                 self.emit(MgrEvent::Quota(json!({ "exceeded": true, "used": used })));
@@ -535,6 +537,8 @@ impl DownloadManager {
         if let Some(files) = js::get(opts, "torrentFiles").as_array().filter(|f| !f.is_empty()) {
             item.extra.insert("onlyFiles".into(), json!(files));
         }
+        let source = js::str_of(js::get(opts, "source"));
+        item.log("added", if source.is_empty() { "Added".to_string() } else { format!("Added from {}", source) });
         let item = Rc::new(RefCell::new(item));
         self.store.downloads.borrow_mut().push(item.clone());
         let qid = js::str_of(js::get(opts, "queueId"));
@@ -631,6 +635,8 @@ impl DownloadManager {
             let mut it = item.borrow_mut();
             it.status = "downloading".into();
             it.status_text = Some("Connecting...".into());
+            let done = it.segments_downloaded();
+            it.log("started", if done > 0 { format!("Resumed at {} bytes", done) } else { "Started".to_string() });
             it.error = None;
             it.error_code = None;
             it.last_try = Some(now_ms());
@@ -714,6 +720,8 @@ impl DownloadManager {
                         it.status = "paused".into();
                         it.rate = Some(0.0);
                         it.status_text = Some(it.pending_status.take().unwrap_or_default());
+                        let by = it.pending_by.take().unwrap_or_else(|| "user".into());
+                        it.log("paused", format!("Paused by {}", by));
                     }
                     m.touch(&item);
                     m.emit(MgrEvent::Stopped(id));
@@ -728,6 +736,11 @@ impl DownloadManager {
                         it.error = Some(err.message.clone());
                         it.error_code = err.code.clone();
                         it.status_text = Some(err.message.clone());
+                        it.pending_by = None;
+                        it.log("failed", match &err.code {
+                            Some(c) => format!("Failed ({}): {}", c, err.message),
+                            None => format!("Failed: {}", err.message),
+                        });
                     }
                     m.touch(&item);
                     let p = m.public_item(&item);
@@ -777,6 +790,9 @@ impl DownloadManager {
             it.downloaded = it.size.filter(|s| *s > 0).unwrap_or(it.downloaded);
             it.rate = Some(0.0);
             it.overwrite = false;
+            let secs = (now_ms() - it.last_try.unwrap_or_else(now_ms)) / 1000.0;
+            let size = it.downloaded;
+            it.log("completed", format!("Completed: {} bytes, last run {:.1} s", size, secs));
             Ok(())
         }
         .await;
@@ -794,6 +810,7 @@ impl DownloadManager {
                     it.status = "error".into();
                     it.error = Some(format!("Could not save file: {}", e.message));
                     it.status_text = it.error.clone();
+                    it.log("failed", format!("Failed: could not save file: {}", e.message));
                 }
                 self.touch(item);
                 let p = self.public_item(item);
@@ -804,6 +821,11 @@ impl DownloadManager {
     }
 
     pub fn stop(&self, id: &str, status_text: Option<&str>) -> bool {
+        self.stop_as(id, status_text, "user")
+    }
+
+    /// `stop`, with who asked for it (for the download's event log).
+    pub fn stop_as(&self, id: &str, status_text: Option<&str>, by: &str) -> bool {
         let eng = self.engine(id);
         let item = self.get(id);
         if eng.is_none() && self.waiting.borrow().iter().any(|x| x == id) {
@@ -813,6 +835,7 @@ impl DownloadManager {
                     let mut it = item.borrow_mut();
                     it.status = "paused".into();
                     it.status_text = Some(status_text.unwrap_or("").to_string());
+                    it.log("paused", format!("Paused by {} while waiting for a free slot", by));
                 }
                 self.touch(&item);
             }
@@ -820,8 +843,12 @@ impl DownloadManager {
             return true;
         }
         if let Some(e) = &eng {
-            if let (Some(t), Some(item)) = (status_text, &item) {
-                item.borrow_mut().pending_status = Some(t.to_string());
+            if let Some(item) = &item {
+                let mut it = item.borrow_mut();
+                it.pending_by = Some(by.to_string());
+                if let Some(t) = status_text {
+                    it.pending_status = Some(t.to_string());
+                }
             }
             e.stop();
         }
@@ -829,13 +856,17 @@ impl DownloadManager {
     }
 
     pub fn stop_all(&self) {
+        self.stop_all_as("user");
+    }
+
+    pub fn stop_all_as(&self, by: &str) {
         let waiting = self.waiting.borrow().clone();
         for id in waiting {
-            self.stop(&id, None);
+            self.stop_as(&id, None, by);
         }
         let ids: Vec<String> = self.engines.borrow().iter().map(|(id, _)| id.clone()).collect();
         for id in ids {
-            self.stop(&id, None);
+            self.stop_as(&id, None, by);
         }
     }
 

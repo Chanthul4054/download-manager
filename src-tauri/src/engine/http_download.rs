@@ -207,6 +207,11 @@ impl HttpDownload {
         self.ctx.store.s(path)
     }
 
+    /// An entry in the download's event log. Not for the data path: one per connection event.
+    fn log(&self, kind: &str, text: String) {
+        self.item.borrow_mut().log(kind, text);
+    }
+
     fn max_connections(&self) -> f64 {
         let (mc, url) = {
             let it = self.item.borrow();
@@ -830,7 +835,9 @@ impl HttpDownload {
         // Exponential backoff with jitter, never sooner than the server's Retry-After.
         let base = 30000f64.min(1000.0 * 2f64.powi(w.retries.get().min(5) as i32));
         let jitter = base * (0.75 + rand::thread_rng().gen::<f64>() * 0.5);
-        sleep_ms((err.retry_after as f64).max(jitter) as u64).await;
+        let wait = (err.retry_after as f64).max(jitter) as u64;
+        self.log("retry", format!("Retry {} in {:.1} s: {}", w.retries.get(), wait as f64 / 1000.0, err.message));
+        sleep_ms(wait).await;
         !self.stopped.get() && !w.aborted()
     }
 
@@ -848,17 +855,34 @@ impl HttpDownload {
 
     /// Whether a response from `host` describes another file than the stored validators do. An ETag
     /// counts only on the host that issued the stored one.
-    fn validators_changed(&self, host: &str, total: Option<u64>, etag: &Option<String>, last_mod: &Option<String>) -> bool {
+    /// Returns what differs (for the event log), or None for the same file.
+    fn validators_changed(&self, host: &str, total: Option<u64>, etag: &Option<String>, last_mod: &Option<String>) -> Option<String> {
         let ignore_mod = js::truthy(&self.setting(&["downloads", "ignoreModTimeChanges"]));
         let it = self.item.borrow();
-        let size_changed = matches!((total, it.size), (Some(t), Some(s)) if t > 0 && s > 0 && t != s);
-        let etag_changed = it.etag_host.as_deref() == Some(host) && matches!((&it.etag, etag), (Some(a), Some(b)) if a != b);
-        let mod_changed = matches!((&it.last_modified, last_mod), (Some(a), Some(b)) if a != b);
-        size_changed || (!ignore_mod && (etag_changed || mod_changed))
+        if let (Some(t), Some(s)) = (total, it.size) {
+            if t > 0 && s > 0 && t != s {
+                return Some(format!("size changed ({} to {} bytes)", s, t));
+            }
+        }
+        if ignore_mod {
+            return None;
+        }
+        if it.etag_host.as_deref() == Some(host) {
+            if let (Some(a), Some(b)) = (&it.etag, etag) {
+                if a != b {
+                    return Some(format!("ETag changed ({} to {})", a, b));
+                }
+            }
+        }
+        match (&it.last_modified, last_mod) {
+            (Some(a), Some(b)) if a != b => Some(format!("Last-Modified changed ({} to {})", a, b)),
+            _ => None,
+        }
     }
 
     /// Stops the download with ECHANGED. The temp file and the segment positions stay as they are.
-    fn fail_changed(&self) {
+    fn fail_changed(&self, why: &str) {
+        self.log("changed", format!("File changed on the server: {}", why));
         self.set_fatal(changed_error());
         for x in self.workers.borrow().iter() {
             x.abort.cancel();
@@ -891,9 +915,10 @@ impl HttpDownload {
         res.destroy();
         // Never restarts by itself: a server that keeps sending other bytes would loop.
         if !self.rewound.borrow_mut().insert(start) {
-            self.fail_changed();
+            self.fail_changed(&format!("the bytes before offset {} differ from the saved ones again", pos));
             return Ok(false);
         }
+        self.log("rewind", format!("The {} bytes before offset {} differ from the server: segment from {} downloaded again", k, pos, start));
         self.emit(EngineEvent::Status("Saved data does not match the server, downloading that part again...".into()));
         s.borrow_mut().rewind(start);
         Ok(false)
@@ -912,6 +937,7 @@ impl HttpDownload {
             if [429, 503].contains(&st) && n > 1 && !first {
                 // Server limits parallel connections: drop this one and lower the cap.
                 self.item.borrow_mut().max_connections = (n as f64 - 1.0).max(1.0);
+                self.log("connections", format!("HTTP {}: connections reduced to {}", st, (n - 1).max(1)));
                 w.abort.cancel();
                 return Ok(false);
             }
@@ -954,7 +980,7 @@ impl HttpDownload {
                 } else {
                     res.header("content-length").filter(|c| !c.is_empty()).and_then(|c| c.trim().parse::<u64>().ok())
                 };
-                it.etag_host = etag.as_ref().map(|_| host);
+                it.etag_host = etag.as_ref().map(|_| host.clone());
                 it.etag = etag;
                 it.last_modified = last_mod;
                 it.content_type = Some(res.header("content-type").unwrap_or("").to_string());
@@ -970,6 +996,7 @@ impl HttpDownload {
             };
             let resumable = meta.resumable;
             let size = meta.size;
+            self.log_connected(&host, st, size, resumable);
             self.emit(EngineEvent::Meta(meta));
             let s = seg(0, size.unwrap_or(INF), 0);
             *w.seg.borrow_mut() = Some(s.clone());
@@ -991,8 +1018,8 @@ impl HttpDownload {
             // The server took If-Range as "not this file" and sent all of it.
             let len = res.header("content-length").and_then(|c| c.trim().parse::<u64>().ok());
             res.destroy();
-            if self.validators_changed(&host, len, &etag, &last_mod) {
-                return self.file_changed(w, len, etag, last_mod, host).await;
+            if let Some(why) = self.validators_changed(&host, len, &etag, &last_mod) {
+                return self.file_changed(w, &why, len, etag, last_mod, host).await;
             }
             // Same file by every validator: the server mishandles If-Range. Ask again without it; a
             // second 200 then means it does not support ranges.
@@ -1018,9 +1045,9 @@ impl HttpDownload {
         // Every continuation is checked, not just the first one after a resume: a file replaced on
         // the server mid-download must not be stitched together from two versions.
         let resuming = self.resuming.replace(false);
-        if self.validators_changed(&host, total, &etag, &last_mod) {
+        if let Some(why) = self.validators_changed(&host, total, &etag, &last_mod) {
             res.destroy();
-            return self.file_changed(w, total, etag, last_mod, host).await;
+            return self.file_changed(w, &why, total, etag, last_mod, host).await;
         }
         let kept = {
             let mut it = self.item.borrow_mut();
@@ -1035,19 +1062,27 @@ impl HttpDownload {
             self.fill_connections();
         }
         if resuming {
+            let size = self.item.borrow().size;
+            self.log_connected(self.last_host.borrow().as_deref().unwrap_or(""), st, size, true);
             self.emit(EngineEvent::Status("Receiving data...".into()));
         }
         Ok(true)
     }
 
+    fn log_connected(&self, host: &str, status: u16, size: Option<u64>, resumable: bool) {
+        let size = size.map(|s| format!("{} bytes", s)).unwrap_or_else(|| "size unknown".into());
+        self.log("connected", format!("Connected to {}: HTTP {}, {}, {}", host, status, size, if resumable { "resumable" } else { "not resumable" }));
+    }
+
     /// A response showed another file than the partial came from. Fails with ECHANGED and keeps the
     /// partial, or (`downloads.autoRestartOnChange`, unless the user kept this partial) starts over
     /// with the new file's validators. Returns false: nothing is read from that response.
-    async fn file_changed(&self, w: &W, total: Option<u64>, etag: Option<String>, last_mod: Option<String>, host: String) -> Result<bool> {
+    async fn file_changed(&self, w: &W, why: &str, total: Option<u64>, etag: Option<String>, last_mod: Option<String>, host: String) -> Result<bool> {
         if self.item.borrow().kept_partial || !js::truthy(&self.setting(&["downloads", "autoRestartOnChange"])) {
-            self.fail_changed();
+            self.fail_changed(why);
             return Ok(false);
         }
+        self.log("changed", format!("File changed on the server: {}. Restarting from the beginning", why));
         self.emit(EngineEvent::Status("File changed on server, restarting...".into()));
         for x in self.workers.borrow().iter() {
             if !Rc::ptr_eq(x, w) {

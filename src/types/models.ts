@@ -36,6 +36,8 @@ export interface DownloadItem {
   resumable?: boolean | null;
   added?: number;
   lastTry?: number | null;
+  /** Event log, oldest first. Only in the `dl:item` reply. */
+  log?: LogEntry[];
   completedAt?: number | null;
   rate?: number | null;
   eta?: number | null;
@@ -439,4 +441,10 @@ export interface LinksPayload {
   userAgent?: string;
   auth?: { user: string; pass: string } | null;
   noProbe?: boolean;
+}
+
+export interface LogEntry {
+  tsMs: number;
+  kind: string;
+  text: string;
 }
