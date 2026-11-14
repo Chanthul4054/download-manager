@@ -2,6 +2,7 @@ import * as React from 'react';
 import { ExternalLink, FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { invoke } from '@/services/ipc';
+import { copyText } from '@/app/commands';
 import { useApp } from '@/stores/app';
 import { Dialog } from '@/components/ui/overlay';
 import { Button } from '@/components/ui/button';
@@ -141,6 +142,25 @@ export function PropertiesDialog({ id, onOpenChange }: { id: string; onOpenChang
           </>
         )}
       </dl>
+      {!!it.log?.length && (
+        <section className="mt-4 border-t border-line pt-3" aria-label="Log">
+          <div className="mb-1.5 flex items-center justify-between">
+            <h3 className="text-xs font-semibold text-fg-2">Log</h3>
+            <Button variant="ghost" size="sm" onClick={() => copyText(it.log!.map((e) => `${new Date(e.tsMs).toISOString()}\t${e.kind}\t${e.text}`).join('\n'), 'Log copied')}>
+              Copy log
+            </Button>
+          </div>
+          <ol className="max-h-40 overflow-y-auto rounded-md border border-line bg-subtle/50 px-2 py-1 font-mono text-[11px] leading-5 select-text" tabIndex={0}>
+            {it.log.map((e, i) => (
+              <li key={i} className="grid grid-cols-[9.5rem_5.5rem_1fr] gap-x-2">
+                <time className="text-fg-3">{new Date(e.tsMs).toLocaleString()}</time>
+                <span className={e.kind === 'failed' || e.kind === 'changed' ? 'text-danger' : 'text-fg-3'}>{e.kind}</span>
+                <span className="min-w-0 break-words text-fg-2">{e.text}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
     </Dialog>
   );
 }

@@ -482,3 +482,77 @@ fn a_download_saved_without_etag_host_learns_it_from_a_206_with_the_same_etag() 
         mgr.dispose();
     });
 }
+
+#[test]
+fn a_changed_file_is_noticed_before_a_resume_splits_any_segment() {
+    run(async {
+        let env = setup("odm-rob-", json!({ "connection": { "maxConnections": 2 } }));
+        let size = 8 * MB;
+        let id = add(&env, format!("{}/versioned/changed-s/file/{}?rate={}", SRV.base, size, 512 * 1024), json!({}));
+        pause_after(&env, &id, MB as u64).await;
+        let before = positions(&env, &id);
+        STATE.bump("changed-s");
+        // More connections than saved segments: the extra ones would split a segment.
+        env.mgr.get(&id).unwrap().borrow_mut().max_connections = 8.0;
+        let end = finished(&env.mgr, &id);
+        env.mgr.start(&id);
+        let it = end.await.expect_err("a file that changed on the server must not complete");
+        assert_eq!(it["errorCode"], "ECHANGED", "{}", it["error"]);
+        assert_eq!(positions(&env, &id), before, "a segment was split before the file was confirmed");
+        env.mgr.dispose();
+    });
+}
+
+// Per-item event log (R9).
+
+/// (kind, text) of every log entry.
+fn log_of(env: &Env, id: &str) -> Vec<(String, String)> {
+    env.mgr.get(id).unwrap().borrow().log.iter().map(|e| (e.kind.clone(), e.text.clone())).collect()
+}
+
+#[test]
+fn a_flaky_download_logs_each_retry_with_its_reason() {
+    run(async {
+        let env = setup("odm-rob-", json!({ "connection": { "maxConnections": 1 } }));
+        let size = 2 * MB;
+        let id = add(&env, format!("{}/flaky/2/503/file/{}?t=log-503", SRV.base, size), json!({}));
+        let end = finished(&env.mgr, &id);
+        env.mgr.start(&id);
+        let it = end.await.unwrap_or_else(|it| panic!("{}", it["error"]));
+        assert!(matches_prefix(&it, size));
+        let log = log_of(&env, &id);
+        let kinds: Vec<&str> = log.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(kinds, ["added", "started", "retry", "retry", "connected", "completed"], "{log:?}");
+        for (_, text) in log.iter().filter(|(k, _)| k == "retry") {
+            assert!(text.contains("HTTP 503"), "retry without its reason: {text}");
+        }
+        let connected = &log[4].1;
+        assert!(connected.contains(SRV.base.trim_start_matches("http://")) && connected.contains("206"), "{connected}");
+        assert!(!connected.contains("t=log-503"), "the log holds a query string: {connected}");
+        // The list sent to the window does not carry every item's log.
+        assert!(it.get("log").is_none(), "the public item carries the log");
+        env.mgr.dispose();
+    });
+}
+
+#[test]
+fn a_changed_file_logs_which_validator_differed_and_who_paused() {
+    run(async {
+        let env = setup("odm-rob-", json!({ "connection": { "maxConnections": 2 } }));
+        let size = 8 * MB;
+        let id = add(&env, format!("{}/versioned/log-changed/file/{}?rate={}", SRV.base, size, 512 * 1024), json!({}));
+        pause_after(&env, &id, MB as u64).await;
+        STATE.bump("log-changed");
+        let end = finished(&env.mgr, &id);
+        env.mgr.start(&id);
+        let it = end.await.expect_err("a file that changed on the server must not complete");
+        assert_eq!(it["errorCode"], "ECHANGED");
+        let log = log_of(&env, &id);
+        let text = |kind: &str| log.iter().find(|(k, _)| k == kind).map(|(_, t)| t.clone()).unwrap_or_else(|| panic!("no {kind} entry: {log:?}"));
+        assert!(text("paused").contains("user"), "{}", text("paused"));
+        assert!(text("changed").contains("ETag"), "{}", text("changed"));
+        assert!(text("failed").contains("ECHANGED"), "{}", text("failed"));
+        assert_eq!(log.iter().filter(|(k, _)| k == "started").count(), 2, "{log:?}");
+        env.mgr.dispose();
+    });
+}

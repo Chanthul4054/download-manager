@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { toast } from 'sonner';
 import { invoke, on } from '@/services/ipc';
 import { refreshGrabbers, useApp } from '@/stores/app';
 import { openDialog, useUi } from '@/stores/ui';
@@ -40,6 +41,10 @@ export default function MainWindow() {
     // A page the backend asked for before this window existed (LinkGrabber from the browser, …).
     void invoke('pending', 'nav').then((nav) => {
       if (Array.isArray(nav)) runCommand('nav', nav[0], nav[1]);
+    });
+    // Shown once: a data file that was restored from a backup at startup.
+    void invoke('pending', 'notices').then((list) => {
+      if (Array.isArray(list)) list.forEach((t) => toast(String(t), { duration: 10000 }));
     });
     const offs = [on('menu', (cmd, arg, arg2) => runCommand(cmd, arg, arg2)), on('sound', (kind) => playSound(kind, useApp.getState().settings.sounds))];
     const s = useApp.getState().settings;

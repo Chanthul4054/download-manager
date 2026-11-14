@@ -176,6 +176,7 @@ function Form({ p }: { p: NewDownloadPayload }) {
         category,
         description,
         referer: p.referer,
+        source: p.source,
         parentPage: p.parentPage,
         cookies: p.cookies,
         userAgent: p.userAgent,

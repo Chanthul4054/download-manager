@@ -328,7 +328,7 @@ impl QueueManager {
         self.running.borrow_mut().retain(|(x, _)| x != id);
         let started = r.started.borrow().clone();
         for item in started {
-            self.manager.stop(&item, None);
+            self.manager.stop_as(&item, None, "its queue");
         }
         self.events.emit(QEvent::Stopped(id.to_string()));
         self.save();

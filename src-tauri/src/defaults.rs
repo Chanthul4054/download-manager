@@ -77,6 +77,9 @@ pub fn default_settings() -> Value {
             "quota": { "enabled": false, "mb": 200, "hours": 1, "warn": true },
             "tls13": true,
         },
+        "storage": {
+            "backupIntervalMin": 10,
+        },
         "saveTo": {
             "tempDir": p(std::env::temp_dir().join("OpenDM")),
             "rememberLastPath": true,
