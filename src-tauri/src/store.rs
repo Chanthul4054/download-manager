@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::task::JoinHandle;
@@ -38,9 +38,56 @@ pub fn deep_merge(base: &Value, over: &Value) -> Value {
 
 pub const NAMES: [&str; 6] = ["settings", "categories", "queues", "downloads", "grabber", "linkgrabber"];
 
+/// Suffixes of the previous generations of a data file, newest first.
+const BACKUPS: [&str; 3] = ["bak", "1.bak", "2.bak"];
+
+fn suffixed(file: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}.{}", file.display(), suffix))
+}
+
+/// Reads a data file, falling back to its backups. A copy that exists but cannot be read is
+/// renamed to `<name>.corrupt-<unix ms>`: kept for diagnosis, and never rotated or overwritten.
+/// Returns the data and whether it came from a backup.
+fn load(file: &Path) -> (Option<Value>, bool) {
+    let ms = chrono::Utc::now().timestamp_millis();
+    let copies = std::iter::once(file.to_path_buf()).chain(BACKUPS.iter().map(|b| suffixed(file, b)));
+    for (i, f) in copies.enumerate() {
+        if !f.is_file() {
+            continue;
+        }
+        match read_json(&f) {
+            Some(v) => return (Some(v), i > 0),
+            None => {
+                let _ = std::fs::rename(&f, suffixed(&f, &format!("corrupt-{}", ms)));
+            }
+        }
+    }
+    (None, false)
+}
+
+/// Makes `file` the newest backup and shifts the older ones. Only called for a file this process
+/// loaded or wrote, so a backup is always a file that parsed.
+fn rotate(file: &Path) {
+    let bak = |i: usize| suffixed(file, BACKUPS[i]);
+    let Ok(now) = std::fs::read(file) else { return };
+    // Unchanged since the last backup (quit and relaunch): keep the older generations.
+    if std::fs::read(bak(0)).is_ok_and(|b| b == now) {
+        return;
+    }
+    let _ = std::fs::remove_file(bak(2));
+    let _ = std::fs::rename(bak(1), bak(2));
+    let _ = std::fs::rename(bak(0), bak(1));
+    // A copy keeps the owner-only mode of the file (settings hold logins).
+    let _ = std::fs::copy(file, bak(0));
+}
+
 pub struct Store {
     pub dir: PathBuf,
     timers: RefCell<HashMap<&'static str, JoinHandle<()>>>,
+    /// Names (see `NAMES`) whose file was missing or broken at startup and came from a backup.
+    pub restored: RefCell<Vec<&'static str>>,
+    /// When each file's backups were last rotated.
+    rotated: RefCell<HashMap<String, Instant>>,
     pub settings: RefCell<Value>,
     pub categories: RefCell<Value>,
     pub queues: RefCell<Value>,
@@ -52,12 +99,18 @@ pub struct Store {
 impl Store {
     pub fn new(dir: &Path) -> Rc<Store> {
         let file = |n: &str| dir.join(format!("{}.json", n));
-        // A data file that exists but cannot be read is copied aside first: the app starts with
-        // defaults for it, and its next save would otherwise destroy the user's list or settings.
+        // A data file that cannot be read is kept aside and its newest readable backup is used;
+        // without one the app starts with defaults for it.
+        let restored = RefCell::new(Vec::new());
         let read_json = |f: &Path| {
-            let v = read_json(f);
-            if v.is_none() && f.is_file() {
-                let _ = std::fs::copy(f, f.with_extension(format!("json.unreadable-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"))));
+            let (v, from_backup) = load(f);
+            if from_backup {
+                if let Some(n) = NAMES.iter().find(|n| file(n) == f) {
+                    restored.borrow_mut().push(*n);
+                    let mut m = serde_json::Map::new();
+                    m.insert("file".into(), Value::String((*n).into()));
+                    crate::diag::diag("restored-from-backup", m);
+                }
             }
             v
         };
@@ -79,9 +132,18 @@ impl Store {
         let linkgrabber = read_json(&file("linkgrabber"))
             .and_then(|v| serde_json::from_value::<LgState>(v).ok())
             .unwrap_or_default();
+        // What loaded is a good generation to keep.
+        let now = Instant::now();
+        let mut rotated = HashMap::new();
+        for n in NAMES {
+            rotate(&file(n));
+            rotated.insert(n.to_string(), now);
+        }
         Rc::new(Store {
             dir: dir.to_path_buf(),
             timers: RefCell::new(HashMap::new()),
+            restored,
+            rotated: RefCell::new(rotated),
             settings: RefCell::new(settings),
             categories: RefCell::new(categories),
             queues: RefCell::new(queues),
@@ -143,8 +205,23 @@ impl Store {
     }
 
     async fn write(&self, name: &str) -> crate::error::Result<()> {
+        // Not on every save: downloads are saved every few seconds, and three backups seconds
+        // apart would be worth one.
+        let min = crate::js::num(&self.s(&["storage", "backupIntervalMin"]));
+        let secs = if min.is_finite() && min > 0.0 { min } else { 10.0 } * 60.0;
+        let due = self.rotated.borrow().get(name).is_none_or(|t| t.elapsed().as_secs_f64() >= secs);
+        if due {
+            self.backup(name).await;
+        }
         let data = self.data(name);
         write_json_atomic(&self.file(name), &data).await
+    }
+
+    /// Rotates the backups of one file now.
+    async fn backup(&self, name: &str) {
+        self.rotated.borrow_mut().insert(name.to_string(), Instant::now());
+        let file = self.file(name);
+        let _ = tokio::task::spawn_blocking(move || rotate(&file)).await;
     }
 
     pub async fn flush(&self, name: &'static str) -> crate::error::Result<()> {
@@ -156,7 +233,10 @@ impl Store {
 
     pub async fn flush_all(&self) {
         for n in NAMES {
-            let _ = self.flush(n).await;
+            // Clean shutdown: what was just saved becomes the newest backup.
+            if self.flush(n).await.is_ok() {
+                self.backup(n).await;
+            }
         }
     }
 
@@ -197,9 +277,137 @@ mod load_tests {
         let s = Store::new(&dir);
         assert_eq!(s.settings.borrow()["connection"]["maxConnections"], 5);
         assert!(s.downloads.borrow().is_empty());
-        let kept: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("downloads.json.unreadable-")).collect();
+        let kept = named(&dir, "downloads.json.corrupt-");
         assert_eq!(kept.len(), 1, "the unreadable list was not kept aside");
         assert_eq!(std::fs::read_to_string(dir.join(&kept[0])).unwrap(), "[{\"id\":\"a\",\"url\":\"http://h/a\"");
+        assert!(s.restored.borrow().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Rotating backups (R15).
+
+    const LIST: &str = "[{\"id\":\"a\",\"url\":\"http://h/a\"}]";
+    const BROKEN: &str = "[{\"id\":\"a\",\"url\":";
+
+    fn fresh(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("opendm-store-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Names in `dir` that start with `prefix`.
+    fn named(dir: &Path, prefix: &str) -> Vec<String> {
+        std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(prefix)).collect()
+    }
+
+    fn block<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+    }
+
+    #[test]
+    fn a_corrupt_list_is_loaded_from_its_backup_and_kept_aside() {
+        let dir = fresh("bak");
+        std::fs::write(dir.join("downloads.json"), BROKEN).unwrap();
+        std::fs::write(dir.join("downloads.json.bak"), LIST).unwrap();
+        let s = Store::new(&dir);
+        assert_eq!(s.downloads.borrow().len(), 1, "the backup was not loaded");
+        assert_eq!(*s.restored.borrow(), vec!["downloads"], "no notice for the restored list");
+        let kept = named(&dir, "downloads.json.corrupt-");
+        assert_eq!(kept.len(), 1, "the corrupt list was not kept");
+        assert_eq!(std::fs::read_to_string(dir.join(&kept[0])).unwrap(), BROKEN);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_list_falls_back_to_the_first_backup_that_parses() {
+        let dir = fresh("bak1");
+        std::fs::write(dir.join("downloads.json.bak"), BROKEN).unwrap();
+        std::fs::write(dir.join("downloads.json.1.bak"), LIST).unwrap();
+        let s = Store::new(&dir);
+        assert_eq!(s.downloads.borrow().len(), 1, "the older backup was not loaded");
+        assert_eq!(*s.restored.borrow(), vec!["downloads"]);
+        assert_eq!(named(&dir, "downloads.json.bak.corrupt-").len(), 1, "the corrupt backup was not kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn when_every_copy_is_corrupt_the_list_starts_empty_and_all_files_are_kept() {
+        let dir = fresh("allbad");
+        for n in ["downloads.json", "downloads.json.bak", "downloads.json.1.bak", "downloads.json.2.bak"] {
+            std::fs::write(dir.join(n), BROKEN).unwrap();
+        }
+        let s = Store::new(&dir);
+        assert!(s.downloads.borrow().is_empty());
+        assert!(s.restored.borrow().is_empty(), "nothing was restored");
+        for n in ["downloads.json.corrupt-", "downloads.json.bak.corrupt-", "downloads.json.1.bak.corrupt-", "downloads.json.2.bak.corrupt-"] {
+            let kept = named(&dir, n);
+            assert_eq!(kept.len(), 1, "{n}* was not kept");
+            assert_eq!(std::fs::read_to_string(dir.join(&kept[0])).unwrap(), BROKEN);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backups_rotate_at_startup_and_shutdown_but_not_on_every_save() {
+        let dir = fresh("rotate");
+        std::fs::write(dir.join("downloads.json"), LIST).unwrap();
+        let s = Store::new(&dir);
+        // Startup: the list that just loaded becomes the newest backup.
+        assert_eq!(std::fs::read_to_string(dir.join("downloads.json.bak")).unwrap(), LIST, "no backup after a successful load");
+        block(async {
+            for i in 0..100 {
+                s.downloads.borrow()[0].borrow_mut().description = format!("save {i}");
+                s.flush("downloads").await.unwrap();
+            }
+        });
+        assert_eq!(std::fs::read_to_string(dir.join("downloads.json.bak")).unwrap(), LIST, "a save inside the interval rotated the backups");
+        assert!(!dir.join("downloads.json.1.bak").exists(), "a save inside the interval rotated the backups");
+        // Clean shutdown.
+        block(s.flush_all());
+        assert_eq!(std::fs::read_to_string(dir.join("downloads.json.1.bak")).unwrap(), LIST, "shutdown did not rotate");
+        let latest = std::fs::read_to_string(dir.join("downloads.json")).unwrap();
+        assert!(latest.contains("save 99"));
+        assert_eq!(std::fs::read_to_string(dir.join("downloads.json.bak")).unwrap(), latest);
+        // The next start finds the newest backup already equal to the list: nothing to rotate.
+        let _again = Store::new(&dir);
+        assert!(!dir.join("downloads.json.2.bak").exists(), "an unchanged list pushed out an older backup");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_after_the_backup_interval_rotates_once() {
+        let dir = fresh("interval");
+        std::fs::write(dir.join("downloads.json"), LIST).unwrap();
+        let s = Store::new(&dir);
+        // 0.0005 min = 30 ms.
+        s.settings.borrow_mut()["storage"]["backupIntervalMin"] = serde_json::json!(0.0005);
+        block(async {
+            s.downloads.borrow()[0].borrow_mut().description = "first".into();
+            s.flush("downloads").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            s.downloads.borrow()[0].borrow_mut().description = "second".into();
+            s.flush("downloads").await.unwrap();
+        });
+        assert!(std::fs::read_to_string(dir.join("downloads.json.bak")).unwrap().contains("first"), "the list on disk did not become the backup");
+        assert_eq!(std::fs::read_to_string(dir.join("downloads.json.1.bak")).unwrap(), LIST);
+        assert!(!dir.join("downloads.json.2.bak").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backups_are_owner_only_like_the_file_they_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fresh("perm");
+        let s = Store::new(&dir);
+        block(async {
+            s.flush("settings").await.unwrap();
+            s.flush_all().await;
+        });
+        let mode = |n: &str| std::fs::metadata(dir.join(n)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode("settings.json"), 0o600);
+        assert_eq!(mode("settings.json.bak"), 0o600);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

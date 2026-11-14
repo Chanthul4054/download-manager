@@ -174,6 +174,7 @@ export interface Settings {
     quota: { enabled: boolean; mb: number; hours: number; warn: boolean };
     tls13?: boolean;
   };
+  storage: { backupIntervalMin: number };
   saveTo: { tempDir: string; rememberLastPath: boolean; createCategoryFolders?: boolean };
   downloads: {
     showStartDialog: boolean;

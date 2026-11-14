@@ -334,6 +334,7 @@ impl App {
             None => dirs::config_dir().unwrap_or_default().join("OpenDM"),
         };
         let store = Store::new(&data_dir);
+        let notices = restore_notices(&store);
         let st = store.clone();
         let resolver: Resolver = Rc::new(move |url: String| {
             let p = st.s(&["proxy"]);
@@ -373,7 +374,7 @@ impl App {
             drop_label: RefCell::new(None),
             views: RefCell::new(HashMap::new()),
             labels: RefCell::new(HashMap::new()),
-            pending: RefCell::new(HashMap::new()),
+            pending: RefCell::new(notices),
             grab_runs: RefCell::new(HashMap::new()),
             interactive: RefCell::new(HashSet::new()),
             cli_quit_after: RefCell::new(HashSet::new()),
@@ -1643,7 +1644,7 @@ impl App {
             }),
             "pending" => {
                 let key = js::str_of(&a(0));
-                let v = if key == "nav" { self.pending.borrow_mut().remove(&key) } else { self.pending.borrow().get(&key).cloned() };
+                let v = if key == "nav" || key == "notices" { self.pending.borrow_mut().remove(&key) } else { self.pending.borrow().get(&key).cloned() };
                 v.unwrap_or(Value::Null)
             }
             "app:menu" => {
@@ -2450,4 +2451,30 @@ async fn join_all<T, F: std::future::Future<Output = T>>(futs: Vec<F>) -> Vec<T>
     })
     .await;
     out.into_iter().map(|x| x.unwrap()).collect()
+}
+
+/// One-time notices for the main window (taken with `pending("notices")`): the data files that
+/// were restored from a backup at startup.
+fn restore_notices(store: &Store) -> HashMap<String, Value> {
+    let texts: Vec<String> = store
+        .restored
+        .borrow()
+        .iter()
+        .map(|n| {
+            let what = match *n {
+                "downloads" => "download list was",
+                "settings" => "settings were",
+                "categories" => "categories were",
+                "queues" => "queues were",
+                "grabber" => "site grabber projects were",
+                _ => "LinkGrabber list was",
+            };
+            format!("Your {} restored from a backup", what)
+        })
+        .collect();
+    let mut m = HashMap::new();
+    if !texts.is_empty() {
+        m.insert("notices".to_string(), json!(texts));
+    }
+    m
 }
