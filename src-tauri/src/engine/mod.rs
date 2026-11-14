@@ -229,6 +229,13 @@ pub async fn open(path: &str, flags: &str) -> Result<Fh> {
             "w" => o.write(true).create(true).truncate(true),
             _ => o.read(true).write(true).create(true).truncate(true),
         };
+        // An unfinished file next to its destination is hidden. Windows also refuses to truncate
+        // an existing hidden file unless the open asks for the attribute.
+        #[cfg(windows)]
+        if path.ends_with(crate::util::PART_EXT) {
+            use std::os::windows::fs::OpenOptionsExt;
+            o.attributes(0x2);
+        }
         o.open(&path).map(Arc::new)
     })
     .await
