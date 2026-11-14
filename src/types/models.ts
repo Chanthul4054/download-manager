@@ -177,7 +177,7 @@ export interface Settings {
     tls13?: boolean;
   };
   storage: { backupIntervalMin: number };
-  saveTo: { tempDir: string; rememberLastPath: boolean; createCategoryFolders?: boolean };
+  saveTo: { tempDir: string; partialLocation: 'auto' | 'beside' | 'tempDir'; syncedFolders: string[]; rememberLastPath: boolean; createCategoryFolders?: boolean };
   downloads: {
     showStartDialog: boolean;
     addOnlyNoStart: boolean;

@@ -52,6 +52,8 @@ pub struct DownloadManager {
     pub global_limiter: LimiterRef,
     quota_log: RefCell<Vec<(i64, u64)>>,
     quota_paused: RefCell<Vec<String>>,
+    /// Destination paths of downloads being finished right now.
+    claimed: RefCell<HashSet<String>>,
     quota_timer: RefCell<Option<JoinHandle<()>>>,
     pub events: Emitter<MgrEvent>,
 }
@@ -105,6 +107,7 @@ impl DownloadManager {
             global_limiter: RateLimiter::shared(0.0),
             quota_log: RefCell::new(Vec::new()),
             quota_paused: RefCell::new(Vec::new()),
+            claimed: RefCell::new(HashSet::new()),
             quota_timer: RefCell::new(None),
             events: Emitter::default(),
         });
@@ -492,7 +495,7 @@ impl DownloadManager {
         };
         let hls = js::get(opts, "hls");
         let id = u::id();
-        let temp_dir = js::str_of(&self.setting(&["saveTo", "tempDir"]));
+        let temp_path = u::partial_path(&self.setting(&["saveTo"]), if parts.is_some() { "muxed" } else { &url_kind }, &save_dir, &file_name, &id);
         let item = Item {
             id: id.clone(),
             url: url.clone(),
@@ -522,7 +525,7 @@ impl DownloadManager {
             hls: if js::truthy(hls) { Some(hls.clone()) } else { None },
             queues: Some(json!([])),
             overwrite: action == "overwrite",
-            temp_path: join(&temp_dir, &format!("{}_{}", id, file_name)),
+            temp_path,
             ..Default::default()
         };
         if js::truthy(js::get(opts, "rememberPath")) && js::truthy(&self.setting(&["saveTo", "rememberLastPath"])) {
@@ -605,6 +608,31 @@ impl DownloadManager {
         }
         self.waiting.borrow_mut().retain(|x| x != id);
         let me = self.rc();
+        // The destination must be writable now, not after the whole file has been downloaded.
+        // shortcut: two small blocking file calls on the engine thread; move into the engines if a slow network share is reported to stall other downloads.
+        if item.borrow().kind.as_deref() != Some("torrent") {
+            let dir = item.borrow().save_dir.clone();
+            if let Err(e) = u::check_writable(&dir) {
+                let msg = format!("Cannot write to the destination folder: {}", e.message);
+                {
+                    let mut it = item.borrow_mut();
+                    it.status = "error".into();
+                    it.rate = Some(0.0);
+                    it.error = Some(msg.clone());
+                    it.error_code = e.code.clone();
+                    it.status_text = Some(msg.clone());
+                    it.log("failed", format!("Failed: {}", msg));
+                }
+                self.touch(&item);
+                // Reported after this call returns, as an engine reports its failures.
+                tokio::task::spawn_local(async move {
+                    let p = me.public_item(&item);
+                    me.emit(MgrEvent::Failed(p, msg));
+                    me.admit();
+                });
+                return true;
+            }
+        }
         let w1 = Rc::downgrade(&me);
         let w2 = Rc::downgrade(&me);
         let w3 = Rc::downgrade(&me);
@@ -756,6 +784,7 @@ impl DownloadManager {
         let p = self.public_item(item);
         self.emit(MgrEvent::Changed(p));
         let existing = js::str_of(&self.setting(&["downloads", "existingFileAction"]));
+        let mut claim: Option<String> = None;
         let r: Result<()> = async {
             let (save_dir, file_name, overwrite, temp) = {
                 let it = item.borrow();
@@ -764,14 +793,30 @@ impl DownloadManager {
             let mut dest = join(&save_dir, &file_name);
             // A torrent is written in place (and may keep seeding from there): nothing to move.
             let in_place = item.borrow().kind.as_deref() == Some("torrent");
-            let exists = !in_place && tokio::fs::metadata(&dest).await.is_ok();
-            if exists && !overwrite && existing != "overwrite" {
-                dest = u::unique_path(&dest, &HashSet::new()).await;
-            }
-            if exists && (overwrite || existing == "overwrite") {
-                u::rm_force(&dest, false).await;
-            }
             if !in_place {
+                let replace = overwrite || existing == "overwrite";
+                let wanted = dest.clone();
+                let exists = loop {
+                    let on_disk = tokio::fs::metadata(&dest).await.is_ok();
+                    // Nothing is awaited between this check and the claim, so two downloads that
+                    // finish at the same moment cannot both take the same name.
+                    let taken = {
+                        let mut claimed = self.claimed.borrow_mut();
+                        if replace || (!on_disk && !claimed.contains(&dest)) {
+                            claimed.insert(dest.clone());
+                            break on_disk;
+                        }
+                        claimed.clone()
+                    };
+                    dest = u::unique_path(&wanted, &taken).await;
+                };
+                claim = Some(dest.clone());
+                if exists {
+                    u::rm_force(&dest, false).await;
+                }
+                if temp.ends_with(u::PART_EXT) {
+                    u::unhide(&temp);
+                }
                 u::move_file(&temp, &dest).await?;
             }
             let extra = item.borrow().extra_files.clone().unwrap_or_default();
@@ -796,6 +841,9 @@ impl DownloadManager {
             Ok(())
         }
         .await;
+        if let Some(c) = claim {
+            self.claimed.borrow_mut().remove(&c);
+        }
         let id = item.borrow().id.clone();
         self.remove_engine(&id);
         match r {
@@ -1016,7 +1064,16 @@ impl DownloadManager {
         let has = |k: &str| patch.get(k).is_some();
         let was_active = self.has_engine(id);
         let url_changed = has("url") && js::str_of(&patch["url"]) != item.borrow().url;
-        if was_active && (url_changed || has("auth")) {
+        // An unfinished file kept next to its destination follows a new folder or name.
+        let moves_partial = {
+            let it = item.borrow();
+            it.temp_path.ends_with(u::PART_EXT)
+                && ((has("saveDir") && js::str_of(&patch["saveDir"]) != it.save_dir)
+                    || (has("fileName") && u::sanitize_file_name(&js::str_of(&patch["fileName"])) != it.file_name))
+        };
+        // A running download is paused for the move and started again below: the file is closed
+        // while it moves.
+        if was_active && (url_changed || has("auth") || moves_partial) {
             self.stop(id, None);
             self.wait_stopped(id).await;
         }
@@ -1069,6 +1126,25 @@ impl DownloadManager {
                 }
             }
         }
+        let mut moved: Result<()> = Ok(());
+        if moves_partial {
+            let (old, new) = {
+                let it = item.borrow();
+                (it.temp_path.clone(), u::partial_path(&self.setting(&["saveTo"]), it.kind.as_deref().unwrap_or(""), &it.save_dir, &it.file_name, &it.id))
+            };
+            if new != old {
+                if tokio::fs::metadata(&old).await.is_ok() {
+                    moved = u::move_file(&old, &new).await;
+                    if moved.is_ok() && !new.ends_with(u::PART_EXT) {
+                        u::unhide(&new);
+                    }
+                }
+                // After a failed move the data stays where it was and is still used from there.
+                if moved.is_ok() {
+                    item.borrow_mut().temp_path = new;
+                }
+            }
+        }
         if let Some(eng) = self.engine(id) {
             if has("speedLimitKB") {
                 eng.set_speed_limit(js::num(&patch["speedLimitKB"]));
@@ -1086,6 +1162,7 @@ impl DownloadManager {
         if was_active && !self.has_engine(id) {
             self.start(id);
         }
+        moved?;
         Ok(self.public_item(&item))
     }
 

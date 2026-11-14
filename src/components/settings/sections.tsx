@@ -197,8 +197,14 @@ export function Folders({ s, set, cats, setCats }: SectionProps) {
       </Section>
       <Section>
         <Toggle label="Remember the last folder chosen for each category" checked={s.saveTo.rememberLastPath} onChange={(v) => st({ rememberLastPath: v })} />
-        <Row label="Temporary folder" hint="Unfinished downloads are kept here and moved when complete." stack>
+        <Row label="Unfinished downloads" hint="New downloads only. Automatic keeps them next to the file, except in cloud-synced folders.">
+          <Select value={s.saveTo.partialLocation} onChange={(v) => st({ partialLocation: v })} options={[['auto', 'Automatic'], ['beside', 'Next to the file'], ['tempDir', 'Temporary folder']]} className="w-44" />
+        </Row>
+        <Row label="Temporary folder" hint="Used for video downloads, cloud-synced folders and when chosen above." stack>
           <FolderInput value={s.saveTo.tempDir} onChange={(v) => st({ tempDir: v })} className="w-full" />
+        </Row>
+        <Row label="Cloud-synced folders" hint="One folder per line, for Dropbox, Google Drive and others. OneDrive is detected." stack>
+          <Textarea rows={3} value={(s.saveTo.syncedFolders ?? []).join('\n')} onChange={(e) => st({ syncedFolders: e.target.value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean) })} className="font-mono text-xs" />
         </Row>
       </Section>
     </>

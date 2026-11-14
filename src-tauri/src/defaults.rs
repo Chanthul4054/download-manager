@@ -82,6 +82,8 @@ pub fn default_settings() -> Value {
         },
         "saveTo": {
             "tempDir": p(std::env::temp_dir().join("OpenDM")),
+            "partialLocation": "auto",
+            "syncedFolders": [],
             "rememberLastPath": true,
             "createCategoryFolders": true,
         },

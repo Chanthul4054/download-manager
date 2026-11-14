@@ -420,12 +420,91 @@ pub async fn move_file(src: &str, dest: &str) -> Result<()> {
     match tokio::fs::rename(src, dest).await {
         Ok(()) => Ok(()),
         Err(e) if crate::error::io_code(&e) == "EXDEV" || e.raw_os_error() == Some(17) => {
-            tokio::fs::copy(src, dest).await?;
-            tokio::fs::remove_file(src).await?;
-            Ok(())
+            copy_move(src, dest).await
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// The move across volumes. The source is deleted only once the copy is on the disk under its
+/// final name; until then the copy has a working name, so a crash never leaves half a file there.
+pub async fn copy_move(src: &str, dest: &str) -> Result<()> {
+    let tmp = format!("{}.opendm-copy", dest);
+    let copied: std::io::Result<()> = async {
+        tokio::fs::copy(src, &tmp).await?;
+        tokio::fs::OpenOptions::new().write(true).open(&tmp).await?.sync_all().await?;
+        tokio::fs::rename(&tmp, dest).await
+    }
+    .await;
+    if let Err(e) = copied {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.into());
+    }
+    tokio::fs::remove_file(src).await?;
+    Ok(())
+}
+
+/// The end of the name of an unfinished file kept next to its destination.
+pub const PART_EXT: &str = ".opendm-part";
+
+/// Where a new download keeps its unfinished file (`saveTo.partialLocation`): next to the
+/// destination, so that finishing is a rename, or in the temporary folder.
+pub fn partial_path(save_to: &Value, kind: &str, save_dir: &str, file_name: &str, id: &str) -> String {
+    // Video downloads work in folders of many files; those stay out of the user's folders.
+    let beside = matches!(kind, "http" | "ftp")
+        && match js::str_of(&save_to["partialLocation"]).as_str() {
+            "tempDir" => false,
+            "beside" => true,
+            // Sync clients upload and lock unfinished files.
+            _ => !is_synced_folder(save_dir, &save_to["syncedFolders"]),
+        };
+    if beside {
+        // shortcut: 22 characters longer than the file name, so a name near the 255 limit fails at start; shorten the name here if that is reported.
+        join(save_dir, &format!(".{}.{}{}", file_name, id.get(..8).unwrap_or(id), PART_EXT))
+    } else {
+        join(&js::str_of(&save_to["tempDir"]), &format!("{}_{}", id, file_name))
+    }
+}
+
+/// Whether `dir` is inside a folder a cloud client keeps in sync: OneDrive's folders, a folder
+/// the user listed, or one a cloud file provider has marked.
+pub fn is_synced_folder(dir: &str, listed: &Value) -> bool {
+    let norm = |p: &str| PathBuf::from(if cfg!(windows) { p.trim().to_lowercase().replace('/', "\\") } else { p.trim().to_string() });
+    let d = norm(dir);
+    let env = ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"].into_iter().filter_map(|k| std::env::var(k).ok());
+    let user = listed.as_array().into_iter().flatten().map(js::str_of);
+    if env.chain(user).any(|root| !root.trim().is_empty() && d.starts_with(norm(&root))) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // RECALL_ON_DATA_ACCESS, RECALL_ON_OPEN, PINNED, UNPINNED.
+        const CLOUD: u32 = 0x40_0000 | 0x4_0000 | 0x8_0000 | 0x10_0000;
+        Path::new(dir).ancestors().any(|a| std::fs::metadata(a).is_ok_and(|m| m.file_attributes() & CLOUD != 0))
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+/// Clears the hidden attribute an unfinished file was created with (see `engine::open`).
+pub fn unhide(path: &str) {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_ATTRIBUTE_NORMAL};
+        let _ = SetFileAttributesW(&windows::core::HSTRING::from(path), FILE_ATTRIBUTE_NORMAL);
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
+/// Creates `dir` and proves a file can be written there.
+pub fn check_writable(dir: &str) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe = Path::new(dir).join(format!(".opendm-write-test-{}", id()));
+    std::fs::File::create(&probe)?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
 }
 
 /// `fs.promises.rm(p, { force: true })` — also removes directories when `recursive`.

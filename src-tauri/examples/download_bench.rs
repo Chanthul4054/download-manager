@@ -97,21 +97,34 @@ struct Run {
     ok: usize,
     files: usize,
     errors: Vec<String>,
+    /// Longest time from "Moving file..." (all bytes written) to Complete.
+    finalize_ms: f64,
+}
+
+/// `--out <dir>`: where the files are saved (default: the temporary folder).
+/// `--partial auto|beside|tempDir`: the `saveTo.partialLocation` setting.
+fn opt(k: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned()
 }
 
 async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>, checkpoint: Option<f64>) -> Run {
     let dir = std::env::temp_dir().join(format!("odm-bench-{}", opendm_lib::util::id()));
+    let out_dir = opt("--out").map(|o| std::path::PathBuf::from(o).join(format!("odm-bench-{}", opendm_lib::util::id()))).unwrap_or_else(|| dir.join("out"));
     let store = Store::new(&dir.join("data"));
     {
         let mut s = store.settings.borrow_mut();
         s["saveTo"]["tempDir"] = json!(dir.join("tmp").to_string_lossy());
+        if let Some(p) = opt("--partial") {
+            s["saveTo"]["partialLocation"] = json!(p);
+        }
         s["proxy"]["mode"] = json!("none");
         s["connection"]["maxConnections"] = json!(sc.conns);
         s["downloads"]["maxSimultaneous"] = json!(8);
         if let Some(c) = checkpoint {
             s["connection"]["checkpointSec"] = json!(c);
         }
-        let out = dir.join("out").to_string_lossy().into_owned();
+        let out = out_dir.to_string_lossy().into_owned();
         drop(s);
         for c in store.categories.borrow_mut().as_array_mut().unwrap() {
             c["folder"] = json!(out);
@@ -142,7 +155,23 @@ async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>, ch
     let tx = RefCell::new(Some(tx));
     let n = sc.files.len();
     let f2 = finished.clone();
+    let moving: Rc<RefCell<HashMap<String, Instant>>> = Rc::new(RefCell::new(HashMap::new()));
+    let finalize_ms = Rc::new(RefCell::new(0f64));
+    let (m2, fin2) = (moving.clone(), finalize_ms.clone());
     mgr.events.on(move |e| {
+        match e {
+            MgrEvent::Changed(it) if it["statusText"] == json!("Moving file...") => {
+                m2.borrow_mut().entry(it["id"].as_str().unwrap_or("").to_string()).or_insert_with(Instant::now);
+            }
+            MgrEvent::Complete(it) => {
+                if let Some(t) = m2.borrow().get(it["id"].as_str().unwrap_or("")) {
+                    let ms = t.elapsed().as_secs_f64() * 1000.0;
+                    let mut f = fin2.borrow_mut();
+                    *f = f.max(ms);
+                }
+            }
+            _ => {}
+        }
         let r = match e {
             MgrEvent::Complete(it) => Some((it["id"].as_str().unwrap_or("").to_string(), true, it.clone())),
             MgrEvent::Failed(it, _) => Some((it["id"].as_str().unwrap_or("").to_string(), false, it.clone())),
@@ -197,11 +226,13 @@ async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>, ch
     let bytes: usize = sc.files.iter().map(|f| f.1).sum();
     store.flush_all().await;
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&out_dir);
     let mut l = lags.borrow().clone();
     l.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p99 = l.get(((l.len() as f64) * 0.99) as usize).copied().unwrap_or(0.0);
     let cpu = cpu1 - cpu0;
     let peak_rss = *peak.borrow();
+    let finalize_ms = *finalize_ms.borrow();
     Run {
         mbps: bytes as f64 / MB as f64 / (wall / 1000.0),
         wall_ms: wall,
@@ -215,6 +246,7 @@ async fn run_once(base: &str, sc: &Scenario, hashes: &HashMap<usize, String>, ch
         ok,
         files: sc.files.len(),
         errors,
+        finalize_ms,
     }
 }
 
@@ -260,7 +292,7 @@ fn main() {
             }
         }
         println!("opendm (Rust) engine · runs {} · checkpoint {}\n", runs, checkpoint.map(|c| format!("{c} s")).unwrap_or_else(|| "default".into()));
-        println!("{:<22}{:>10}{:>17}{:>8}{:>10}{:>8}{:>9}{:>7}{:>9}{:>9}{:>9}  integrity", "scenario", "MB/s(med)", "MB/s(min..max)", "wall s", "CPU ms/GB", "RSS MB", "loop p99", "syncs", "sync ms", "sync max", "writ MB");
+        println!("{:<22}{:>10}{:>17}{:>8}{:>10}{:>8}{:>9}{:>7}{:>9}{:>9}{:>9}  integrity", "scenario", "MB/s(med)", "MB/s(min..max)", "wall s", "CPU ms/GB", "RSS MB", "loop p99", "syncs", "sync ms", "sync max", "writ MB  (then: 100 % to Complete, median/max ms)");
         let mut out = serde_json::Map::new();
         let mut warmed = false;
         for sc in scenarios() {
@@ -290,6 +322,8 @@ fn main() {
                 "syncMsPerRun": median(rs.iter().map(|r| r.sync_ms).collect()),
                 "syncMaxMs": rs.iter().map(|r| r.sync_max_ms).fold(0.0, f64::max),
                 "writtenMBPerRun": median(rs.iter().map(|r| r.written_mb).collect()),
+                "finalizeMs": median(rs.iter().map(|r| r.finalize_ms).collect()),
+                "finalizeMaxMs": rs.iter().map(|r| r.finalize_ms).fold(0.0, f64::max),
                 "ok": rs.iter().map(|r| r.ok).sum::<usize>(),
                 "files": rs.iter().map(|r| r.files).sum::<usize>(),
                 "errors": errors,
@@ -297,7 +331,7 @@ fn main() {
             let mut uniq: Vec<String> = errors.clone();
             uniq.dedup();
             println!(
-                "{:<22}{:>10.1}{:>17}{:>8.2}{:>10.0}{:>8.0}{:>9.1}{:>7.0}{:>9.0}{:>9.0}{:>9.0}  {}/{}{}",
+                "{:<22}{:>10.1}{:>17}{:>8.2}{:>10.0}{:>8.0}{:>9.1}{:>7.0}{:>9.0}{:>9.0}{:>9.0}  {}/{}{}  {:.0}/{:.0} ms",
                 sc.name,
                 r["mbps"].as_f64().unwrap(),
                 format!("{:.0}..{:.0}", r["mbpsMin"].as_f64().unwrap(), r["mbpsMax"].as_f64().unwrap()),
@@ -311,7 +345,9 @@ fn main() {
                 r["writtenMBPerRun"].as_f64().unwrap(),
                 r["ok"],
                 r["files"],
-                if uniq.is_empty() { String::new() } else { format!(" {}", uniq.join("; ")) }
+                if uniq.is_empty() { String::new() } else { format!(" {}", uniq.join("; ")) },
+                r["finalizeMs"].as_f64().unwrap(),
+                r["finalizeMaxMs"].as_f64().unwrap()
             );
             out.insert(sc.name.into(), r);
         }
