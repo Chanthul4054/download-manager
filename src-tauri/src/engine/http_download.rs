@@ -9,11 +9,13 @@
 //!
 //! Persisted state lives on `item`: size, resumable, segments[{start,end,pos}], etag, etagHost, lastModified.
 //!
-//! Resume integrity: a continuation sends `If-Range` (see `if_range_value`). A file that changed on
+//! Resume integrity: a continuation sends `If-Range` (see `if_range_value`) and first re-reads the
+//! last `OVERLAP` bytes it already has, comparing them with the temp file. A file that changed on
 //! the server fails with ECHANGED and keeps the partial file; nothing is truncated unless
 //! `downloads.autoRestartOnChange` is on or the user restarts.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use bytes::Bytes;
@@ -27,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::limiter::{perf_now, take_all, RateLimiter, LimiterRef, SpeedMeter};
 use super::net::{ReqOpts, Response};
-use super::{checkpoint, checkpoint_ms, checkpoints, file_len, interval, open, reconcile, set_len, sleep_ms, sync_file, write_at, Ctx, Engine, EngineEvent, Fh, Meta, Sink, MAX_FAST_PIECE, MAX_PIECE};
+use super::{checkpoint, checkpoint_ms, checkpoints, file_len, interval, open, read_at, reconcile, set_len, sleep_ms, sync_file, write_at, Ctx, Engine, EngineEvent, Fh, Meta, Sink, MAX_FAST_PIECE, MAX_PIECE};
 use crate::error::{Error, Result};
 use crate::item::{seg, ItemRef, SegRef, INF};
 use crate::js;
@@ -35,6 +37,9 @@ use crate::util::{dirname, file_name_from_disposition};
 
 /// Errors that retrying will not fix.
 const DISK_ERRORS: &[&str] = &["ENOSPC", "EDQUOT", "EROFS", "EACCES", "EPERM", "EFBIG", "EIO"];
+
+/// Bytes before a segment's position that a continuation downloads again to compare with the disk.
+const OVERLAP: u64 = 64;
 
 /// The If-Range validator for a continuation request (RFC 9110 §13.1.5): a strong ETag, but only
 /// towards the host that issued it; otherwise Last-Modified. A weak ETag is never usable.
@@ -154,6 +159,8 @@ pub struct HttpDownload {
     direct: RefCell<Option<String>>,
     /// Host that answered the latest request (after redirects): where the next one is expected to land.
     last_host: RefCell<Option<String>>,
+    /// Starts of the segments rewound after an overlap mismatch; a second mismatch is ECHANGED.
+    rewound: RefCell<HashSet<u64>>,
     /// The server answered 200 to an If-Range request for an unchanged file: not sent again.
     no_if_range: Cell<bool>,
 }
@@ -181,6 +188,7 @@ impl HttpDownload {
             idle: Notify::new(),
             direct: RefCell::new(None),
             last_host: RefCell::new(None),
+            rewound: RefCell::new(HashSet::new()),
             no_if_range: Cell::new(false),
         });
         *me.me.borrow_mut() = Rc::downgrade(&me);
@@ -618,8 +626,9 @@ impl HttpDownload {
                 (b.pos, b.end)
             };
             let chunk_end = end.min(pos + CHUNK);
+            let k = OVERLAP.min(pos - s.borrow().start);
             let mut u = url::Url::parse(&self.url())?;
-            set_search_param(&mut u, "range", &format!("{}-{}", pos, chunk_end - 1));
+            set_search_param(&mut u, "range", &format!("{}-{}", pos - k, chunk_end - 1));
             let attempt: Result<()> = async {
                 let mut res = self.request(u.as_str(), self.headers(), w).await?;
                 if res.status >= 400 {
@@ -632,6 +641,9 @@ impl HttpDownload {
                         return Ok(());
                     }
                     return Err(err);
+                }
+                if !self.verify_overlap(w, &mut res, k).await? {
+                    return Ok(());
                 }
                 while let Some(chunk) = res.chunk(Some(&w.abort)).await? {
                     if w.aborted() || self.stopped.get() {
@@ -716,8 +728,11 @@ impl HttpDownload {
             }
             let url = self.url();
             let mut headers = self.headers();
-            super::net::set_header(&mut headers, "Range", &format!("bytes={}-", from));
-            let if_range = self.if_range(from, &url);
+            // Ask again for the last bytes already on disk, to compare them (verify_overlap).
+            let k = w.seg().map(|s| OVERLAP.min(from - s.borrow().start)).unwrap_or(0);
+            let req_from = from - k;
+            super::net::set_header(&mut headers, "Range", &format!("bytes={}-", req_from));
+            let if_range = self.if_range(req_from, &url);
             if let Some(v) = &if_range {
                 super::net::set_header(&mut headers, "If-Range", v);
             }
@@ -744,7 +759,10 @@ impl HttpDownload {
                 }
             };
             let attempt: Result<bool> = async {
-                if !self.accept_response(w, &mut res, first, from, if_range.is_some()).await? {
+                if !self.accept_response(w, &mut res, first, req_from, if_range.is_some()).await? {
+                    return Ok(false);
+                }
+                if !self.verify_overlap(w, &mut res, k).await? {
                     return Ok(false);
                 }
                 self.pump(w, &mut res).await?;
@@ -840,6 +858,40 @@ impl HttpDownload {
         for x in self.workers.borrow().iter() {
             x.abort.cancel();
         }
+    }
+
+    /// The first `k` body bytes repeat the `k` bytes before the segment's position and must equal
+    /// the temp file; they are not written or counted. Returns false to retry: the segment was
+    /// rewound to its start, or (a second mismatch on it) the download failed with ECHANGED.
+    async fn verify_overlap(&self, w: &W, res: &mut Response, k: u64) -> Result<bool> {
+        if k == 0 {
+            return Ok(true);
+        }
+        let k = k as usize;
+        let s = w.seg().ok_or_else(|| Error::new("No segment"))?;
+        let mut got: Vec<u8> = Vec::with_capacity(k);
+        while got.len() < k {
+            let Some(mut c) = res.chunk(Some(&w.abort)).await? else { return Err(Error::new("Connection closed prematurely")) };
+            let rest = c.split_off(c.len().min(k - got.len()));
+            got.extend_from_slice(&c);
+            res.unread(rest);
+        }
+        let (start, pos) = {
+            let b = s.borrow();
+            (b.start, b.pos)
+        };
+        if read_at(&self.fh()?, pos - k as u64, k).await? == got {
+            return Ok(true);
+        }
+        res.destroy();
+        // Never restarts by itself: a server that keeps sending other bytes would loop.
+        if !self.rewound.borrow_mut().insert(start) {
+            self.fail_changed();
+            return Ok(false);
+        }
+        self.emit(EngineEvent::Status("Saved data does not match the server, downloading that part again...".into()));
+        s.borrow_mut().rewind(start);
+        Ok(false)
     }
 
     /// Validates status/headers; establishes metadata on the first response. Returns false to retry.
