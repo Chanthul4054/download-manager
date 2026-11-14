@@ -52,6 +52,8 @@ pub struct DownloadManager {
     pub global_limiter: LimiterRef,
     quota_log: RefCell<Vec<(i64, u64)>>,
     quota_paused: RefCell<Vec<String>>,
+    /// Destination paths of downloads being finished right now.
+    claimed: RefCell<HashSet<String>>,
     quota_timer: RefCell<Option<JoinHandle<()>>>,
     pub events: Emitter<MgrEvent>,
 }
@@ -105,6 +107,7 @@ impl DownloadManager {
             global_limiter: RateLimiter::shared(0.0),
             quota_log: RefCell::new(Vec::new()),
             quota_paused: RefCell::new(Vec::new()),
+            claimed: RefCell::new(HashSet::new()),
             quota_timer: RefCell::new(None),
             events: Emitter::default(),
         });
@@ -781,6 +784,7 @@ impl DownloadManager {
         let p = self.public_item(item);
         self.emit(MgrEvent::Changed(p));
         let existing = js::str_of(&self.setting(&["downloads", "existingFileAction"]));
+        let mut claim: Option<String> = None;
         let r: Result<()> = async {
             let (save_dir, file_name, overwrite, temp) = {
                 let it = item.borrow();
@@ -789,14 +793,27 @@ impl DownloadManager {
             let mut dest = join(&save_dir, &file_name);
             // A torrent is written in place (and may keep seeding from there): nothing to move.
             let in_place = item.borrow().kind.as_deref() == Some("torrent");
-            let exists = !in_place && tokio::fs::metadata(&dest).await.is_ok();
-            if exists && !overwrite && existing != "overwrite" {
-                dest = u::unique_path(&dest, &HashSet::new()).await;
-            }
-            if exists && (overwrite || existing == "overwrite") {
-                u::rm_force(&dest, false).await;
-            }
             if !in_place {
+                let replace = overwrite || existing == "overwrite";
+                let wanted = dest.clone();
+                let exists = loop {
+                    let on_disk = tokio::fs::metadata(&dest).await.is_ok();
+                    // Nothing is awaited between this check and the claim, so two downloads that
+                    // finish at the same moment cannot both take the same name.
+                    let taken = {
+                        let mut claimed = self.claimed.borrow_mut();
+                        if replace || (!on_disk && !claimed.contains(&dest)) {
+                            claimed.insert(dest.clone());
+                            break on_disk;
+                        }
+                        claimed.clone()
+                    };
+                    dest = u::unique_path(&wanted, &taken).await;
+                };
+                claim = Some(dest.clone());
+                if exists {
+                    u::rm_force(&dest, false).await;
+                }
                 if temp.ends_with(u::PART_EXT) {
                     u::unhide(&temp);
                 }
@@ -824,6 +841,9 @@ impl DownloadManager {
             Ok(())
         }
         .await;
+        if let Some(c) = claim {
+            self.claimed.borrow_mut().remove(&c);
+        }
         let id = item.borrow().id.clone();
         self.remove_engine(&id);
         match r {

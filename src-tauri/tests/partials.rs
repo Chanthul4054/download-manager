@@ -168,6 +168,32 @@ fn two_downloads_with_the_same_name_in_one_folder_do_not_collide() {
 }
 
 #[test]
+fn two_downloads_with_the_same_name_finishing_together_keep_both_files() {
+    run(async {
+        let env = setup("odm-part-", settings());
+        let ids: Vec<String> = (0..4).map(|i| add(&env, format!("{}/file/{}", SRV.base, MB + i), json!({ "fileName": "together.bin" }))).collect();
+        let ends: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                let (mgr, id) = (env.mgr.clone(), id.clone());
+                tokio::task::spawn_local(async move { finished(&mgr, &id).await })
+            })
+            .collect();
+        for id in &ids {
+            env.mgr.start(id);
+        }
+        let mut paths = std::collections::HashSet::new();
+        for (i, e) in ends.into_iter().enumerate() {
+            let it = e.await.unwrap().unwrap_or_else(|it| panic!("{}", it["error"]));
+            assert!(read(&it["savedPath"]) == DATA[..MB + i], "file {} was overwritten", i);
+            paths.insert(it["savedPath"].as_str().unwrap().to_string());
+        }
+        assert_eq!(paths.len(), 4);
+        env.mgr.dispose();
+    });
+}
+
+#[test]
 fn remove_and_restart_leave_no_partial_behind() {
     run(async {
         let env = setup("odm-part-", settings());
