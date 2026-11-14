@@ -171,15 +171,18 @@ fn after_an_unclean_exit_the_saved_list_resumes_and_the_file_is_intact() {
         env.mgr.start(&id);
         // Let the periodic save capture partial progress, then snapshot the list as a crash would leave it.
         let list = env.store.file("downloads");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let snapshot = loop {
             sleep(500).await;
             if let Ok(t) = std::fs::read_to_string(&list) {
                 let v: Value = serde_json::from_str(&t).unwrap();
                 let pos: u64 = v[0]["segments"].as_array().map(|s| s.iter().map(|s| s["pos"].as_u64().unwrap() - s["start"].as_u64().unwrap()).sum()).unwrap_or(0);
-                if pos > 0 {
+                let active = matches!(v[0]["status"].as_str().unwrap_or(""), "downloading" | "connecting" | "waiting");
+                if active && pos > 0 {
                     break t;
                 }
             }
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for a running snapshot with durable progress");
         };
         // The file on disk is now ahead of the saved list, as after a crash.
         sleep(1500).await;
