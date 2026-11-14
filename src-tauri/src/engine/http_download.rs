@@ -474,6 +474,11 @@ impl HttpDownload {
         }) {
             return Some(orphan.clone());
         }
+        // A resumed partial is not reshaped before the server has confirmed it is the same file:
+        // a change must leave the saved segments exactly as they were.
+        if self.resuming.get() {
+            return None;
+        }
         let min_split = (64.0 * 1024.0f64).max(min_kb * 1024.0) as u64;
         let mut best: Option<usize> = None;
         for (i, s) in segs.iter().enumerate() {
@@ -969,6 +974,8 @@ impl HttpDownload {
             let s = seg(0, size.unwrap_or(INF), 0);
             *w.seg.borrow_mut() = Some(s.clone());
             self.item.borrow_mut().segments = Some(vec![s]);
+            // Starting over (the server stopped honouring ranges): nothing left to confirm.
+            self.resuming.set(false);
             self.emit(EngineEvent::Status("Receiving data...".into()));
             if resumable && size.unwrap_or(0) > 0 {
                 let me = self.rc();
@@ -1023,8 +1030,8 @@ impl HttpDownload {
             }
             std::mem::take(&mut it.kept_partial)
         };
-        if kept {
-            // The kept partial still belongs to the file on the server.
+        if kept || resuming {
+            // Confirmed: the connections held back until now (see next_segment) can start.
             self.fill_connections();
         }
         if resuming {

@@ -482,3 +482,23 @@ fn a_download_saved_without_etag_host_learns_it_from_a_206_with_the_same_etag() 
         mgr.dispose();
     });
 }
+
+#[test]
+fn a_changed_file_is_noticed_before_a_resume_splits_any_segment() {
+    run(async {
+        let env = setup("odm-rob-", json!({ "connection": { "maxConnections": 2 } }));
+        let size = 8 * MB;
+        let id = add(&env, format!("{}/versioned/changed-s/file/{}?rate={}", SRV.base, size, 512 * 1024), json!({}));
+        pause_after(&env, &id, MB as u64).await;
+        let before = positions(&env, &id);
+        STATE.bump("changed-s");
+        // More connections than saved segments: the extra ones would split a segment.
+        env.mgr.get(&id).unwrap().borrow_mut().max_connections = 8.0;
+        let end = finished(&env.mgr, &id);
+        env.mgr.start(&id);
+        let it = end.await.expect_err("a file that changed on the server must not complete");
+        assert_eq!(it["errorCode"], "ECHANGED", "{}", it["error"]);
+        assert_eq!(positions(&env, &id), before, "a segment was split before the file was confirmed");
+        env.mgr.dispose();
+    });
+}
