@@ -14,7 +14,14 @@ export function itemMenu(sel: DownloadItem[]): MenuEntry[] {
   const done = one?.status === 'complete';
   const queues = useApp.getState().queues;
   const ids = sel.map((s) => s.id);
+  // The file changed on the server: nothing is thrown away until the user chooses.
+  const changed: MenuEntry[] = one?.status === 'error' && one.errorCode === 'ECHANGED' ? [
+    { label: 'Restart from the beginning', icon: RotateCcw, onSelect: () => redownload(one) },
+    { label: 'Keep partial file', icon: Pause, onSelect: () => invoke('dl:keepPartial', one.id) },
+    '-',
+  ] : [];
   return [
+    ...changed,
     { label: 'Open', icon: ExternalLink, kbd: 'Enter', disabled: !done, onSelect: () => one && invoke('dl:open', one.id) },
     { label: 'Open folder', icon: FolderOpen, disabled: !one, onSelect: () => one && invoke('dl:openFolder', one.id) },
     { label: 'Show progress', icon: Activity, disabled: !one || one.status !== 'downloading', onSelect: () => one && invoke('dl:progressWindow', one.id) },

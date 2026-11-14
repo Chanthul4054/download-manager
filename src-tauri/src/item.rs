@@ -178,6 +178,17 @@ pub struct Item {
     pub etag: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string", skip_serializing_if = "Option::is_none")]
     pub last_modified: Option<String>,
+    /// The host (after redirects) that issued `etag`. CDN edges can disagree on ETags, so an ETag
+    /// is only sent or compared on this host. None for downloads saved before this existed.
+    #[serde(default, deserialize_with = "de_opt_string", skip_serializing_if = "Option::is_none")]
+    pub etag_host: Option<String>,
+    /// `Error.code` of the failure in `error` (e.g. ECHANGED).
+    #[serde(default, deserialize_with = "de_opt_string", skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// The user kept the partial file after ECHANGED: a resume checks the server with one request
+    /// and never restarts by itself.
+    #[serde(default, deserialize_with = "de_bool", skip_serializing_if = "is_false")]
+    pub kept_partial: bool,
     #[serde(default, deserialize_with = "de_opt_string", skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string", skip_serializing_if = "Option::is_none")]

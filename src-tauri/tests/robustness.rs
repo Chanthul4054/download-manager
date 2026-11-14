@@ -323,6 +323,8 @@ fn keep_partial_pauses_with_the_data_and_a_resume_checks_once_and_never_restarts
 
         // Even with automatic restarts on, a kept partial is only checked, never thrown away.
         env.store.settings.borrow_mut()["downloads"]["autoRestartOnChange"] = json!(true);
+        // The first attempt's cancelled connections may still be reaching the server.
+        sleep(300).await;
         let n = STATE.requests("changed-k").len();
         let end = finished(&env.mgr, &id);
         env.mgr.start(&id);

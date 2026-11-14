@@ -594,6 +594,7 @@ impl DownloadManager {
                 it.status = "waiting".into();
                 it.status_text = Some("Waiting for a free slot".into());
                 it.error = None;
+                it.error_code = None;
             }
             self.touch(&item);
             return true;
@@ -631,6 +632,7 @@ impl DownloadManager {
             it.status = "downloading".into();
             it.status_text = Some("Connecting...".into());
             it.error = None;
+            it.error_code = None;
             it.last_try = Some(now_ms());
             it.rate = Some(0.0);
         }
@@ -724,6 +726,7 @@ impl DownloadManager {
                         it.status = "error".into();
                         it.rate = Some(0.0);
                         it.error = Some(err.message.clone());
+                        it.error_code = err.code.clone();
                         it.status_text = Some(err.message.clone());
                     }
                     m.touch(&item);
@@ -917,6 +920,8 @@ impl DownloadManager {
             it.size = None;
             it.resumable = None;
             it.error = None;
+            it.error_code = None;
+            it.kept_partial = false;
             it.status_text = Some(String::new());
             it.saved_path = None;
             it.completed_at = None;
@@ -936,6 +941,7 @@ impl DownloadManager {
             x.done = false;
             x.downloaded = 0;
             x.resumable = None;
+            x.kept_partial = false;
         }
         {
             let mut it = item.borrow_mut();
@@ -951,9 +957,27 @@ impl DownloadManager {
         }
     }
 
-    /// "Keep partial" for a download that failed because the file changed on the server.
-    // shortcut: empty stub so the checkpoint-2 tests compile; implemented with R1 at checkpoint 3.
-    pub fn keep_partial(&self, _id: &str) {}
+    /// "Keep partial" for a download that failed because the file changed on the server: paused
+    /// with its data. A later resume checks the server again and never restarts by itself.
+    pub fn keep_partial(&self, id: &str) {
+        let Some(item) = self.get(id) else { return };
+        {
+            let mut it = item.borrow_mut();
+            if it.status != "error" || it.error_code.as_deref() != Some("ECHANGED") {
+                return;
+            }
+            it.status = "paused".into();
+            it.status_text = Some("File changed on the server — partial kept".into());
+            it.error = None;
+            it.error_code = None;
+            it.kept_partial = true;
+            // The parts of a video download are resumed by their own engines.
+            for x in it.parts.iter().flatten() {
+                x.borrow_mut().kept_partial = true;
+            }
+        }
+        self.touch(&item);
+    }
 
     /// Properties dialog edits, including "refresh download address" (new URL keeps progress).
     pub async fn update(&self, id: &str, patch: &Value) -> Result<Value> {

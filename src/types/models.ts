@@ -28,6 +28,8 @@ export interface DownloadItem {
   status: DownloadStatus;
   statusText?: string | null;
   error?: string | null;
+  /** Code of the failure in `error`; 'ECHANGED' = the file changed on the server. */
+  errorCode?: string | null;
   size?: number | null;
   estimatedSize?: number | null;
   downloaded: number;
@@ -182,6 +184,7 @@ export interface Settings {
     existingFileAction: 'rename' | 'overwrite';
     userAgent: string;
     ignoreModTimeChanges: boolean;
+    autoRestartOnChange: boolean;
     showQueuePanelOnLater: boolean;
     maxSimultaneous: number;
   };

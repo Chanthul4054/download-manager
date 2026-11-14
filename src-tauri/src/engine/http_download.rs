@@ -7,7 +7,11 @@
 //! it splits the largest remaining segment again. Segment positions are persisted so a
 //! download survives pause, crash or power loss.
 //!
-//! Persisted state lives on `item`: size, resumable, segments[{start,end,pos}], etag, lastModified.
+//! Persisted state lives on `item`: size, resumable, segments[{start,end,pos}], etag, etagHost, lastModified.
+//!
+//! Resume integrity: a continuation sends `If-Range` (see `if_range_value`). A file that changed on
+//! the server fails with ECHANGED and keeps the partial file; nothing is truncated unless
+//! `downloads.autoRestartOnChange` is on or the user restarts.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -31,6 +35,23 @@ use crate::util::{dirname, file_name_from_disposition};
 
 /// Errors that retrying will not fix.
 const DISK_ERRORS: &[&str] = &["ENOSPC", "EDQUOT", "EROFS", "EACCES", "EPERM", "EFBIG", "EIO"];
+
+/// The If-Range validator for a continuation request (RFC 9110 §13.1.5): a strong ETag, but only
+/// towards the host that issued it; otherwise Last-Modified. A weak ETag is never usable.
+pub fn if_range_value(etag: Option<&str>, etag_host: Option<&str>, host: &str, last_modified: Option<&str>) -> Option<String> {
+    match etag {
+        Some(e) if !e.starts_with("W/") && etag_host == Some(host) => Some(e.to_string()),
+        _ => last_modified.map(String::from),
+    }
+}
+
+fn host_of(url: &str) -> String {
+    url::Url::parse(url).map(|u| super::net::host_with_port(&u)).unwrap_or_default()
+}
+
+fn changed_error() -> Error {
+    Error::with_code("File changed on the server", "ECHANGED")
+}
 
 /// Retry-After as milliseconds (delta seconds or an HTTP date), or 0.
 pub fn retry_after_ms(header: Option<&str>) -> u64 {
@@ -131,6 +152,10 @@ pub struct HttpDownload {
     idle: Notify,
     /// The file's own address when `item.url` is a hoster page (resolved at every start).
     direct: RefCell<Option<String>>,
+    /// Host that answered the latest request (after redirects): where the next one is expected to land.
+    last_host: RefCell<Option<String>>,
+    /// The server answered 200 to an If-Range request for an unchanged file: not sent again.
+    no_if_range: Cell<bool>,
 }
 
 impl HttpDownload {
@@ -155,6 +180,8 @@ impl HttpDownload {
             timers: RefCell::new(Vec::new()),
             idle: Notify::new(),
             direct: RefCell::new(None),
+            last_host: RefCell::new(None),
+            no_if_range: Cell::new(false),
         });
         *me.me.borrow_mut() = Rc::downgrade(&me);
         me
@@ -297,7 +324,14 @@ impl HttpDownload {
             self.emit(EngineEvent::Status("Connecting...".into()));
             if can_resume {
                 self.resuming.set(true);
-                self.fill_connections();
+                if self.item.borrow().kept_partial {
+                    // A kept partial is checked with one request before anything else is asked for.
+                    if let Some(s) = self.next_segment() {
+                        self.spawn(Some(s));
+                    }
+                } else {
+                    self.fill_connections();
+                }
             } else {
                 self.spawn(None);
             }
@@ -683,6 +717,10 @@ impl HttpDownload {
             let url = self.url();
             let mut headers = self.headers();
             super::net::set_header(&mut headers, "Range", &format!("bytes={}-", from));
+            let if_range = self.if_range(from, &url);
+            if let Some(v) = &if_range {
+                super::net::set_header(&mut headers, "If-Range", v);
+            }
             let mut res = match self.request(&url, headers, w).await {
                 Ok(r) => {
                     if first {
@@ -706,7 +744,7 @@ impl HttpDownload {
                 }
             };
             let attempt: Result<bool> = async {
-                if !self.accept_response(w, &mut res, first, from).await? {
+                if !self.accept_response(w, &mut res, first, from, if_range.is_some()).await? {
                     return Ok(false);
                 }
                 self.pump(w, &mut res).await?;
@@ -773,8 +811,40 @@ impl HttpDownload {
         !self.stopped.get() && !w.aborted()
     }
 
+    /// If-Range for a request starting at `from`, or None: a first request, a server that mishandled
+    /// it earlier, or "ignore server file changes".
+    fn if_range(&self, from: u64, url: &str) -> Option<String> {
+        if from == 0 || self.no_if_range.get() || js::truthy(&self.setting(&["downloads", "ignoreModTimeChanges"])) {
+            return None;
+        }
+        let it = self.item.borrow();
+        // The header is chosen before any redirect: expect the host the last response came from.
+        let host = self.last_host.borrow().clone().unwrap_or_else(|| host_of(url));
+        if_range_value(it.etag.as_deref(), it.etag_host.as_deref(), &host, it.last_modified.as_deref())
+    }
+
+    /// Whether a response from `host` describes another file than the stored validators do. An ETag
+    /// counts only on the host that issued the stored one.
+    fn validators_changed(&self, host: &str, total: Option<u64>, etag: &Option<String>, last_mod: &Option<String>) -> bool {
+        let ignore_mod = js::truthy(&self.setting(&["downloads", "ignoreModTimeChanges"]));
+        let it = self.item.borrow();
+        let size_changed = matches!((total, it.size), (Some(t), Some(s)) if t > 0 && s > 0 && t != s);
+        let etag_changed = it.etag_host.as_deref() == Some(host) && matches!((&it.etag, etag), (Some(a), Some(b)) if a != b);
+        let mod_changed = matches!((&it.last_modified, last_mod), (Some(a), Some(b)) if a != b);
+        size_changed || (!ignore_mod && (etag_changed || mod_changed))
+    }
+
+    /// Stops the download with ECHANGED. The temp file and the segment positions stay as they are.
+    fn fail_changed(&self) {
+        self.set_fatal(changed_error());
+        for x in self.workers.borrow().iter() {
+            x.abort.cancel();
+        }
+    }
+
     /// Validates status/headers; establishes metadata on the first response. Returns false to retry.
-    async fn accept_response(&self, w: &W, res: &mut Response, first: bool, from: u64) -> Result<bool> {
+    /// `from` is the first byte asked for; `if_range` whether the request carried If-Range.
+    async fn accept_response(&self, w: &W, res: &mut Response, first: bool, from: u64, if_range: bool) -> Result<bool> {
         let st = res.status;
         if st >= 400 {
             res.destroy();
@@ -799,6 +869,8 @@ impl HttpDownload {
         let total = range.as_ref().and_then(|r| r.total);
         let etag = res.header("etag").filter(|x| !x.is_empty()).map(|x| x.to_string());
         let last_mod = res.header("last-modified").filter(|x| !x.is_empty()).map(|x| x.to_string());
+        let host = host_of(&res.url);
+        *self.last_host.borrow_mut() = Some(host.clone());
         // A 206 must cover exactly the bytes asked for; otherwise ranges cannot be trusted.
         let bad_range = st == 206
             && match &range {
@@ -825,6 +897,7 @@ impl HttpDownload {
                 } else {
                     res.header("content-length").filter(|c| !c.is_empty()).and_then(|c| c.trim().parse::<u64>().ok())
                 };
+                it.etag_host = etag.as_ref().map(|_| host);
                 it.etag = etag;
                 it.last_modified = last_mod;
                 it.content_type = Some(res.header("content-type").unwrap_or("").to_string());
@@ -855,6 +928,19 @@ impl HttpDownload {
             return Ok(true);
         }
 
+        if st == 200 && if_range {
+            // The server took If-Range as "not this file" and sent all of it.
+            let len = res.header("content-length").and_then(|c| c.trim().parse::<u64>().ok());
+            res.destroy();
+            if self.validators_changed(&host, len, &etag, &last_mod) {
+                return self.file_changed(w, len, etag, last_mod, host).await;
+            }
+            // Same file by every validator: the server mishandles If-Range. Ask again without it; a
+            // second 200 then means it does not support ranges.
+            self.no_if_range.set(true);
+            return Ok(false);
+        }
+
         if st == 200 || bad_range {
             // Server ignored Range for a continuation request, or answered with the wrong bytes.
             res.destroy();
@@ -873,39 +959,55 @@ impl HttpDownload {
         // Every continuation is checked, not just the first one after a resume: a file replaced on
         // the server mid-download must not be stitched together from two versions.
         let resuming = self.resuming.replace(false);
-        let ignore_mod = js::truthy(&self.setting(&["downloads", "ignoreModTimeChanges"]));
-        let changed = {
-            let it = self.item.borrow();
-            let size_changed = matches!((total, it.size), (Some(t), Some(s)) if t > 0 && s > 0 && t != s);
-            let etag_changed = matches!((&it.etag, &etag), (Some(a), Some(b)) if a != b);
-            let mod_changed = matches!((&it.last_modified, &last_mod), (Some(a), Some(b)) if a != b);
-            size_changed || (!ignore_mod && (etag_changed || mod_changed))
-        };
-        if changed || resuming {
-            if changed {
-                self.emit(EngineEvent::Status("File changed on server, restarting...".into()));
-                res.destroy();
-                for x in self.workers.borrow().iter() {
-                    if !Rc::ptr_eq(x, w) {
-                        x.abort.cancel();
-                    }
-                }
-                let s = {
-                    let mut it = self.item.borrow_mut();
-                    it.size = total.filter(|t| *t > 0);
-                    it.etag = etag;
-                    it.last_modified = last_mod;
-                    let s = seg(0, it.size.unwrap_or(INF), 0);
-                    it.segments = Some(vec![s.clone()]);
-                    s
-                };
-                *w.seg.borrow_mut() = Some(s);
-                set_len(&self.fh()?, 0).await?;
-                return Ok(false);
+        if self.validators_changed(&host, total, &etag, &last_mod) {
+            res.destroy();
+            return self.file_changed(w, total, etag, last_mod, host).await;
+        }
+        let kept = {
+            let mut it = self.item.borrow_mut();
+            if it.etag_host.is_none() && it.etag.is_some() && it.etag == etag {
+                // Saved before etagHost existed: this host has just confirmed the ETag.
+                it.etag_host = Some(host);
             }
+            std::mem::take(&mut it.kept_partial)
+        };
+        if kept {
+            // The kept partial still belongs to the file on the server.
+            self.fill_connections();
+        }
+        if resuming {
             self.emit(EngineEvent::Status("Receiving data...".into()));
         }
         Ok(true)
+    }
+
+    /// A response showed another file than the partial came from. Fails with ECHANGED and keeps the
+    /// partial, or (`downloads.autoRestartOnChange`, unless the user kept this partial) starts over
+    /// with the new file's validators. Returns false: nothing is read from that response.
+    async fn file_changed(&self, w: &W, total: Option<u64>, etag: Option<String>, last_mod: Option<String>, host: String) -> Result<bool> {
+        if self.item.borrow().kept_partial || !js::truthy(&self.setting(&["downloads", "autoRestartOnChange"])) {
+            self.fail_changed();
+            return Ok(false);
+        }
+        self.emit(EngineEvent::Status("File changed on server, restarting...".into()));
+        for x in self.workers.borrow().iter() {
+            if !Rc::ptr_eq(x, w) {
+                x.abort.cancel();
+            }
+        }
+        let s = {
+            let mut it = self.item.borrow_mut();
+            it.size = total.filter(|t| *t > 0);
+            it.etag_host = etag.as_ref().map(|_| host);
+            it.etag = etag;
+            it.last_modified = last_mod;
+            let s = seg(0, it.size.unwrap_or(INF), 0);
+            it.segments = Some(vec![s.clone()]);
+            s
+        };
+        *w.seg.borrow_mut() = Some(s);
+        set_len(&self.fh()?, 0).await?;
+        Ok(false)
     }
 
     async fn restart_non_resumable(&self, w: &W) -> Result<bool> {
@@ -1190,6 +1292,17 @@ mod tests {
         assert_eq!(retry_after_ms(Some("2")), 2000);
         assert_eq!(retry_after_ms(Some("9999")), 300000);
         assert_eq!(retry_after_ms(None), 0);
+    }
+
+    #[test]
+    fn if_range_prefers_a_strong_etag_from_its_own_host() {
+        let lm = Some("Mon, 01 Jan 2024 00:00:00 GMT");
+        assert_eq!(if_range_value(Some("\"a\""), Some("h"), "h", lm).as_deref(), Some("\"a\""));
+        assert_eq!(if_range_value(Some("W/\"a\""), Some("h"), "h", lm).as_deref(), lm);
+        assert_eq!(if_range_value(Some("\"a\""), Some("h"), "other", lm).as_deref(), lm);
+        assert_eq!(if_range_value(Some("\"a\""), None, "h", lm).as_deref(), lm);
+        assert_eq!(if_range_value(Some("W/\"a\""), Some("h"), "h", None), None);
+        assert_eq!(if_range_value(None, None, "h", None), None);
     }
 
     #[test]

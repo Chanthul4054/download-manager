@@ -175,6 +175,7 @@ export function Downloads({ s, set }: SectionProps) {
           <NumberInput value={s.downloads.maxSimultaneous} min={0} max={64} onValue={(v) => d({ maxSimultaneous: v })} />
         </Row>
         <Toggle label="Ignore server file changes when resuming" checked={s.downloads.ignoreModTimeChanges} onChange={(v) => d({ ignoreModTimeChanges: v })} />
+        <Toggle label="Restart automatically when the file changes on the server" hint="Off keeps the partial file and asks what to do." checked={s.downloads.autoRestartOnChange} onChange={(v) => d({ autoRestartOnChange: v })} />
         <Row label="User-Agent for manual downloads" stack>
           <Input value={s.downloads.userAgent} onChange={(e) => d({ userAgent: e.target.value })} placeholder="Default (current Chrome)" className="font-mono text-xs" />
         </Row>
